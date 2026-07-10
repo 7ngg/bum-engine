@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.egg-info/
+
+# .NET
+bin/
+obj/
+*.user
+
+# Node
+node_modules/
+.next/
+out/
+
+# Build artifacts
+*.rvt
+*.zip
+dist/
+
+# OS/editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

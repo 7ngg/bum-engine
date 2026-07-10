@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bum-engine/schemas/layout.schema.json",
+  "title": "Layout",
+  "description": "One concrete floor-plan variant. Fully explicit so the Revit builder never re-derives geometry. All coordinates in meters, origin at plot SW corner, +x east, +y north. version 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "preset", "seed", "objective", "levels", "wall_height_m", "plot", "orientation", "rooms", "walls", "doors", "windows", "entry"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0.0" },
+    "preset": { "type": "string", "description": "e.g. gW_eN (garage West, entry North)" },
+    "seed": { "type": "integer" },
+    "objective": { "type": "number", "description": "Solver objective value; higher is better." },
+    "levels": { "type": "integer", "minimum": 1 },
+    "wall_height_m": { "type": "number", "exclusiveMinimum": 0 },
+    "plot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width_m", "depth_m"],
+      "properties": {
+        "width_m": { "type": "number", "exclusiveMinimum": 0 },
+        "depth_m": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "orientation": { "enum": ["N", "E", "S", "W"] },
+    "rooms": { "type": "array", "items": { "$ref": "#/$defs/room" } },
+    "walls": { "type": "array", "items": { "$ref": "#/$defs/wall" } },
+    "doors": { "type": "array", "items": { "$ref": "#/$defs/door" } },
+    "windows": { "type": "array", "items": { "$ref": "#/$defs/window" } },
+    "entry": { "$ref": "#/$defs/door" },
+    "terrace": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rect_m"],
+          "properties": { "rect_m": { "$ref": "#/$defs/rect" } }
+        }
+      ]
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "rect": {
+      "description": "[x0, y0, x1, y1] with x0<x1, y0<y1 (meters).",
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number" }
+    },
+    "point": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number" }
+    },
+    "room": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "category", "rect_m"],
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "enum": ["living", "private", "wet", "service", "circ", "office", "outdoor"] },
+        "rect_m": { "$ref": "#/$defs/rect" },
+        "zone": { "type": "string", "description": "Parent macro-zone id." }
+      }
+    },
+    "wall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start", "end", "thickness_m", "height_m", "exterior"],
+      "properties": {
+        "id": { "type": "string" },
+        "start": { "$ref": "#/$defs/point" },
+        "end": { "$ref": "#/$defs/point" },
+        "thickness_m": { "type": "number", "exclusiveMinimum": 0 },
+        "height_m": { "type": "number", "exclusiveMinimum": 0 },
+        "exterior": { "type": "boolean" }
+      }
+    },
+    "door": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "wall_id", "center", "width_m", "height_m"],
+      "properties": {
+        "from": { "type": "string", "description": "Room name (or 'OUTSIDE' for entry)." },
+        "to": { "type": "string", "description": "Room name." },
+        "wall_id": { "type": "string", "description": "Host wall id." },
+        "center": { "$ref": "#/$defs/point" },
+        "width_m": { "type": "number", "exclusiveMinimum": 0 },
+        "height_m": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["room", "wall_id", "center", "width_m", "height_m", "sill_m"],
+      "properties": {
+        "room": { "type": "string" },
+        "wall_id": { "type": "string" },
+        "center": { "$ref": "#/$defs/point" },
+        "width_m": { "type": "number", "exclusiveMinimum": 0 },
+        "height_m": { "type": "number", "exclusiveMinimum": 0 },
+        "sill_m": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}
