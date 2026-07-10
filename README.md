@@ -39,10 +39,10 @@ all components:
 | M1 | solver emits one validator-passing layout | ✅ |
 | M2 | preset×seed variants + rank + gate + SVG | ✅ |
 | M4 | Gemini `/extract` with schema validation + retry | ✅ |
-| M3 | RevitBuilder + desktop add-in → native `.rvt` | ⏳ |
-| M5 | orchestrator + EF Core/SQLite | ⏳ |
-| M6 | Next.js UI | ⏳ |
-| M7 | APS Design Automation + Docker/compose/nginx/CI | ⏳ |
+| M3 | RevitBuilder + desktop add-in → native `.rvt` | ✅ (code; runs in Revit) |
+| M5 | orchestrator + EF Core/SQLite | ✅ |
+| M6 | Next.js UI | ✅ |
+| M7 | APS Design Automation + Docker/compose/nginx/CI | ✅ |
 
 ## Quick start (geometry)
 ```bash

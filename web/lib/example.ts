@@ -1,0 +1,24 @@
+// Demo program so the UI works end to end without a Gemini key.
+// Mirrors services/geometry/data/program.example.json.
+export const EXAMPLE_PROGRAM = {
+  version: "1.0.0",
+  plot: { width_m: 16.0, depth_m: 12.0 },
+  orientation: "N",
+  target_area_m2: 160.0,
+  floors: 1,
+  spaces: [
+    { id: "garage", target_m2: 36.0, min_w_m: 5.4, min_h_m: 5.4, category: "service", tags: ["parking"] },
+    { id: "living", target_m2: 30.0, min_w_m: 4.0, min_h_m: 4.0, category: "living", tags: ["social", "public"] },
+    { id: "dining", target_m2: 14.0, min_w_m: 3.0, min_h_m: 3.0, category: "living", tags: ["social", "public"] },
+    { id: "kitchen_laundry", target_m2: 20.0, min_w_m: 4.0, min_h_m: 4.0, category: "service", tags: ["wet"] },
+    { id: "master_suite", target_m2: 26.0, min_w_m: 4.0, min_h_m: 4.5, category: "private", tags: ["sleep", "composite"] },
+    { id: "children", target_m2: 28.0, min_w_m: 3.0, min_h_m: 6.0, category: "private", tags: ["sleep", "composite"] },
+    { id: "office", target_m2: 10.0, min_w_m: 2.5, min_h_m: 2.5, category: "office", tags: ["work"] },
+    { id: "entry", target_m2: 12.0, min_w_m: 3.0, min_h_m: 3.0, category: "circ", tags: ["composite"] },
+  ],
+  adjacency: {
+    desirable: [["kitchen_laundry", "dining"], ["dining", "living"], ["entry", "living"], ["children", "living"]],
+    semi: [["entry", "office"], ["garage", "entry"], ["kitchen_laundry", "entry"]],
+    avoid: [["master_suite", "kitchen_laundry"], ["garage", "living"]],
+  },
+};

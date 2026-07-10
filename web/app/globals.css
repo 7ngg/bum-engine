@@ -1,0 +1,82 @@
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #1f2328;
+  --muted: #6a737d;
+  --line: #d8dee4;
+  --accent: #2f6feb;
+  --accent-ink: #ffffff;
+  --ok: #1a7f37;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+
+h1 { font-size: 1.6rem; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 24px; }
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(47, 111, 235, 0.2); }
+.card .svgwrap { background: #fff; padding: 10px; border-bottom: 1px solid var(--line); }
+.card .svgwrap svg { width: 100%; height: auto; display: block; }
+.card .meta { padding: 10px 12px; font-size: 0.85rem; }
+.card .meta .tag { color: var(--muted); }
+.card .meta b { font-variant-numeric: tabular-nums; }
+
+.err { color: #b3261e; margin-top: 10px; }
+.status { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+.status.ok { color: var(--ok); }
+.spacer { flex: 1; }
+label.check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.9rem; }
