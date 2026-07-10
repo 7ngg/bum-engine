@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  APS Design Automation AppBundle descriptor. Package this file plus the built
+  BumEngine.DA.dll, BumEngine.RevitBuilder.dll and DesignAutomationBridge.dll
+  into a folder named "BumEngineDA.bundle" (with Contents/ subfolder) and zip it,
+  then upload as an AppBundle. Engine: Autodesk.Revit+2025.
+-->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    ProductType="Application"
+    Name="BumEngineDA"
+    AppVersion="1.0.0"
+    Description="Builds a native Revit model from layout.json">
+  <CompanyDetails Name="bum-engine" />
+  <Components Description="bum-engine DA">
+    <RuntimeRequirements OS="Win64" Platform="Revit" SeriesMin="R2025" SeriesMax="R2025" />
+    <ComponentEntry
+        AppName="BumEngineDA"
+        ModuleName="./Contents/BumEngine.DA.dll"
+        LoadOnRevitStartup="True">
+      <Data />
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

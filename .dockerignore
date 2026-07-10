@@ -1,0 +1,12 @@
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/.next
+**/bin
+**/obj
+**/*.db
+**/handoff
+**/output
+.git
+**/.env

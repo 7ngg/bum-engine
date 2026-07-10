@@ -1,0 +1,34 @@
+# Prod stack: nginx front door on :80, internal services not published.
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
+services:
+  geometry:
+    ports: []
+    restart: unless-stopped
+
+  api:
+    environment:
+      GeometryService__BaseUrl: http://geometry:8000
+      Export__Mode: ${EXPORT_MODE:-DesignAutomation}
+      APS__ClientId: ${APS_CLIENT_ID:-}
+      APS__ClientSecret: ${APS_CLIENT_SECRET:-}
+      APS__ActivityId: ${APS_ACTIVITY_ID:-}
+    ports: []
+    restart: unless-stopped
+
+  web:
+    environment:
+      # same-origin: browser hits nginx, which proxies /api
+      NEXT_PUBLIC_API_BASE: ""
+    ports: []
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+      - api
+    ports:
+      - "80:80"
+    restart: unless-stopped

@@ -1,0 +1,43 @@
+# Dev stack: build from source, expose each service directly.
+#   docker compose -f docker/docker-compose.yml up --build
+services:
+  geometry:
+    build:
+      context: ..
+      dockerfile: services/geometry/Dockerfile
+    image: bum-geometry
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "8000:8000"
+
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    image: bum-api
+    environment:
+      GeometryService__BaseUrl: http://geometry:8000
+      Export__Mode: AddInHandoff
+    depends_on:
+      - geometry
+    volumes:
+      - api-data:/data
+    ports:
+      - "5080:8080"
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    image: bum-web
+    environment:
+      # browser talks to the API directly in dev
+      NEXT_PUBLIC_API_BASE: http://localhost:5080
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  api-data:
