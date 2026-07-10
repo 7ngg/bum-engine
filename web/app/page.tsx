@@ -119,13 +119,15 @@ export default function Home() {
                         >
                           {busyExport === v.id ? "Exporting…" : "Export to Revit"}
                         </button>
-                        <a
-                          href={rvtUrl(v.id)}
-                          onClick={(e) => e.stopPropagation()}
-                          download
-                        >
-                          <button>Download .rvt</button>
-                        </a>
+                        {v.rvtAvailable || ex?.status === "Ready" ? (
+                          <a href={rvtUrl(v.id)} onClick={(e) => e.stopPropagation()} download>
+                            <button>Download .rvt</button>
+                          </a>
+                        ) : (
+                          <button disabled title="Build the .rvt first (needs a Revit host)">
+                            Download .rvt
+                          </button>
+                        )}
                       </div>
                     )}
                     {ex && (
