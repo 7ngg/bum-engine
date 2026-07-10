@@ -98,7 +98,8 @@ def extract_program(
         raise GeminiError("GEMINI_API_KEY not set")
 
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0)
+    timeout_s = float(os.environ.get("GEMINI_TIMEOUT_S", "30"))
+    client = client or httpx.Client(timeout=timeout_s)
     try:
         errors: list[str] = []
         last_raw = ""

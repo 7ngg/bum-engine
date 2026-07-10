@@ -8,7 +8,8 @@ services:
     image: bum-geometry
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_TIMEOUT_S: ${GEMINI_TIMEOUT_S:-30}
     ports:
       - "8000:8000"
 
