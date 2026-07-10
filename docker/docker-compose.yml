@@ -32,8 +32,8 @@ services:
       dockerfile: Dockerfile
     image: bum-web
     environment:
-      # browser talks to the API directly in dev
-      NEXT_PUBLIC_API_BASE: http://localhost:5080
+      # Next server rewrites /api/* to the orchestrator (browser stays same-origin)
+      ORCHESTRATOR_URL: http://api:8080
     depends_on:
       - api
     ports:

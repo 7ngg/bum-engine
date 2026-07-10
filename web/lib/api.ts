@@ -1,4 +1,6 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+// Always same-origin: the Next server rewrites /api/* to the orchestrator
+// (see next.config.mjs). Avoids baking an API URL into the client bundle.
+export const API_BASE = "";
 
 export interface VariantDto {
   id: string;
