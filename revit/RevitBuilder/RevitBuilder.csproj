@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared, host-agnostic Revit model builder. Targets the Revit 2025 API
+    (.NET 8). The Revit API assemblies are supplied by the Nice3point NuGet
+    metapackages so the library builds without a local Revit install (e.g. in
+    CI). At runtime the real RevitAPI.dll from the host process is used.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>BumEngine.RevitBuilder</AssemblyName>
+    <RootNamespace>BumEngine.Revit</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Revit API assemblies (compile-time only; not copied to output). -->
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2025.*" />
+  </ItemGroup>
+
+</Project>

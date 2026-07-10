@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Revit add-in manifest. Copy this file and BumEngine.AddIn.dll (plus
+  BumEngine.RevitBuilder.dll) to:
+    %APPDATA%\Autodesk\Revit\Addins\2025\
+  Then "bum-engine: Build layout from JSON" appears under Add-Ins > External Tools.
+-->
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Name>bum-engine: Build layout from JSON</Name>
+    <Assembly>BumEngine.AddIn.dll</Assembly>
+    <FullClassName>BumEngine.Revit.AddIn.BuildLayoutCommand</FullClassName>
+    <AddInId>7f3b2c9e-2a1d-4c6b-9e10-1b8f4a2d5c31</AddInId>
+    <VendorId>BUME</VendorId>
+    <VendorDescription>bum-engine</VendorDescription>
+  </AddIn>
+</RevitAddIns>
