@@ -87,12 +87,13 @@ def extract_program(
     prompt: str,
     *,
     api_key: str | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     max_retries: int = 2,
     client: httpx.Client | None = None,
 ) -> Program:
     """Extract a validated Program from a natural-language brief."""
     api_key = api_key or os.environ.get("GEMINI_API_KEY")
+    model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
     if not api_key:
         raise GeminiError("GEMINI_API_KEY not set")
 
