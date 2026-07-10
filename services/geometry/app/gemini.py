@@ -98,7 +98,7 @@ def extract_program(
         raise GeminiError("GEMINI_API_KEY not set")
 
     owns_client = client is None
-    client = client or httpx.Client(timeout=60.0)
+    client = client or httpx.Client(timeout=30.0)
     try:
         errors: list[str] = []
         last_raw = ""
@@ -136,7 +136,12 @@ def _call(client: httpx.Client, api_key: str, model: str, text: str) -> str:
             "temperature": 0.2,
         },
     }
-    r = client.post(url, params={"key": api_key}, json=body)
+    try:
+        r = client.post(url, params={"key": api_key}, json=body)
+    except httpx.TimeoutException as e:
+        raise GeminiError(f"gemini request timed out ({type(e).__name__}); check model id / connectivity")
+    except httpx.HTTPError as e:
+        raise GeminiError(f"gemini request failed: {type(e).__name__}: {e}")
     if r.status_code != 200:
         raise GeminiError(f"gemini HTTP {r.status_code}: {r.text[:300]}")
     payload = r.json()
