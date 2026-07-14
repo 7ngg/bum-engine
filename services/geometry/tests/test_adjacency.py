@@ -44,12 +44,13 @@ def test_empty_adjacency_reproduces_default_objective(raw_program, tight_program
 
 def test_extra_desirable_pair_changes_objective(raw_program, tight_program):
     program = tight_program
-    # office/master_suite share no wall requirement today (neither required
-    # nor in the default desirable/semi lists) — rewarding it is new information.
+    # office/children share no wall requirement today (neither required nor in
+    # the default desirable/semi lists) — rewarding it is new information the
+    # solver realises (the two end up adjacent, +40 to the objective).
     base = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
 
     augmented = copy.deepcopy(raw_program)
-    augmented["adjacency"]["desirable"].append(["office", "master_suite"])
+    augmented["adjacency"]["desirable"].append(["office", "children"])
     prog2 = Program.model_validate(augmented)
     r2 = solve(prog2, "gW_eN", seed=1, time_limit_s=12, workers=1)
 

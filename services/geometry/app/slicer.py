@@ -16,9 +16,11 @@ is reachable and every door sits on a real shared wall.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from . import geom
+from . import standards
 from .models import (
     Category,
     Door,
@@ -48,7 +50,17 @@ WINDOW_ROOMS = {"Kitchen"}  # name-based exceptions
 
 
 def _snap(v: float) -> float:
+    """Round to the nearest grid line. ONLY for a free midpoint that carries no
+    minimum (the divider between two equal-minimum rooms). A dimension that
+    carries a Neufert minimum must never use this — round() can land BELOW the
+    minimum (round(2.2/0.5)*0.5 = 2.0); use _ceil_snap for those."""
     return round(v / GRID_M) * GRID_M
+
+
+def _ceil_snap(v: float) -> float:
+    """Round a minimum UP to the grid, so a room given exactly its standards
+    minimum still clears it after snapping (matches solver._ceil_u)."""
+    return math.ceil(v / GRID_M - 1e-9) * GRID_M
 
 
 @dataclass
@@ -89,11 +101,21 @@ def _side_of(r: geom.Rect, other: geom.Rect) -> str:
 def _slice_master(r: ZoneRect) -> list[FinalRoom]:
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
-    service = _snap(min(2.5, h * 0.45))
-    if service < 2.0 or w < 3.0:
+    mbath = standards.ROOMS["Master Bathroom"]
+    wic = standards.ROOMS["Walk-in Closet"]
+    mbed = standards.ROOMS["Master Bedroom"]
+    # North service strip (Bathroom | Closet) deep enough for both; Bedroom below
+    # takes ALL surplus depth. Bathroom gets its min width; Closet takes the rest.
+    service = _ceil_snap(max(mbath.min_h_m, wic.min_h_m))  # min-carrying -> ceil
+    bath_w = _ceil_snap(mbath.min_w_m)                     # min-carrying -> ceil
+    if (
+        (h - service) < mbed.min_h_m
+        or w < mbed.min_w_m
+        or (w - bath_w) < wic.min_w_m
+    ):
         return [FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, y1))]
-    sy = _snap(y1 - service)  # bedroom below, service strip above (north/interior)
-    mid = _snap((x0 + x1) / 2)
+    sy = y1 - service  # position: aligned edge - aligned dim, no snap needed
+    mid = x0 + bath_w
     return [
         FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, sy)),
         FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy, mid, y1)),
@@ -103,14 +125,21 @@ def _slice_master(r: ZoneRect) -> list[FinalRoom]:
 
 def _slice_children(r: ZoneRect) -> list[FinalRoom]:
     x0, y0, x1, y1 = r.rect_m
-    h = y1 - y0
-    if h < 6.0:
+    w, h = x1 - x0, y1 - y0
+    bathroom = standards.ROOMS["Bathroom"]
+    bed = standards.ROOMS["Bedroom"]
+    # three horizontal bands so both beds run along the (vertical) exterior wall.
+    # Middle Bathroom gets its min DEPTH (ceil-snapped); the two beds split the
+    # remaining depth. The divider between the two equal-minimum beds is a free
+    # midpoint -> _snap; we assert each resulting bed clears the Bedroom minimum.
+    bath_h = _ceil_snap(bathroom.min_h_m)  # min-carrying -> ceil (2.2 -> 2.5)
+    rest = h - bath_h
+    top = _snap(rest / 2)  # free midpoint between the two beds
+    bot = rest - top
+    if w < max(bed.min_w_m, bathroom.min_w_m) or top < bed.min_h_m or bot < bed.min_h_m:
         return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
-    # three horizontal bands so both beds run along the (vertical) exterior wall
-    bath = _snap(max(1.8, h * 0.24))
-    bed = _snap((h - bath) / 2)
-    a = _snap(y0 + bed)
-    b = _snap(a + bath)
+    a = y0 + top
+    b = a + bath_h
     return [
         FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, x1, a)),
         FinalRoom("Bathroom", "wet", r.zone, (x0, a, x1, b)),
@@ -118,67 +147,88 @@ def _slice_children(r: ZoneRect) -> list[FinalRoom]:
     ]
 
 
-def _slice_kitchen(r: ZoneRect, dining: ZoneRect | None) -> list[FinalRoom]:
+def _slice_kitchen(r: ZoneRect, side: str | None) -> list[FinalRoom]:
+    # `side` is the direction of Dining, DECIDED BY THE SOLVER (result.cut_sides)
+    # and read here — not re-derived from _side_of. The solver constrained the
+    # zone's (w, h) to a shape legal for the cut on this axis (legal_pairs), so
+    # the slice below is guaranteed legal.
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
-    if min(w, h) < 4.0 or dining is None:
+    kitchen = standards.ROOMS["Kitchen"]
+    laundry = standards.ROOMS["Laundry"]
+    if side is None:
         return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
-    side = _side_of((x0, y0, x1, y1), tuple(dining.rect_m))  # dining direction
-    # Laundry goes to the opposite side; Kitchen keeps the dining side.
+    # Laundry gets its min strip (ceil-snapped) on the cut axis; Kitchen keeps
+    # the dining side and takes ALL the surplus. No magic fraction.
     if side in ("N", "S"):
-        depth = _snap(max(2.0, h * 0.35))
+        depth = _ceil_snap(laundry.min_h_m)  # Laundry Y-depth
+        if (h - depth) < kitchen.min_h_m or w < max(kitchen.min_w_m, laundry.min_w_m):
+            return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
         if side == "S":  # dining south -> kitchen south, laundry north
-            ky = _snap(y1 - depth)
+            ky = y1 - depth
             return [
                 FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, ky)),
                 FinalRoom("Laundry", "service", r.zone, (x0, ky, x1, y1)),
             ]
-        ly = _snap(y0 + depth)
+        ly = y0 + depth
         return [
             FinalRoom("Laundry", "service", r.zone, (x0, y0, x1, ly)),
             FinalRoom("Kitchen", "wet", r.zone, (x0, ly, x1, y1)),
         ]
-    depth = _snap(max(2.0, w * 0.35))
+    depth = _ceil_snap(laundry.min_w_m)  # Laundry X-depth
+    if (w - depth) < kitchen.min_w_m or h < max(kitchen.min_h_m, laundry.min_h_m):
+        return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
     if side == "W":  # dining west -> kitchen west, laundry east
-        kx = _snap(x1 - depth)
+        kx = x1 - depth
         return [
             FinalRoom("Kitchen", "wet", r.zone, (x0, y0, kx, y1)),
             FinalRoom("Laundry", "service", r.zone, (kx, y0, x1, y1)),
         ]
-    lx = _snap(x0 + depth)
+    lx = x0 + depth
     return [
         FinalRoom("Laundry", "service", r.zone, (x0, y0, lx, y1)),
         FinalRoom("Kitchen", "wet", r.zone, (lx, y0, x1, y1)),
     ]
 
 
-def _slice_entry(r: ZoneRect, garage: ZoneRect | None) -> list[FinalRoom]:
+def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
+    # `side` is the direction of the Garage. entry uses the BOTH-axis-legal
+    # intersection table (legal_pairs), so its slice is legal on either axis and
+    # the side may be read straight from geometry (_side_of) in slice_zones — no
+    # cut-axis solver var is needed here (unlike kitchen_laundry).
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
-    if min(w, h) < 3.0 or garage is None:
+    mud = standards.ROOMS["Mudroom"]
+    foy = standards.ROOMS["Foyer"]
+    if side is None:
         return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
-    side = _side_of((x0, y0, x1, y1), tuple(garage.rect_m))
+    # Mudroom (garage-side buffer) gets its min strip (ceil-snapped); Foyer takes
+    # the rest.
     if side in ("W", "E"):
-        depth = _snap(max(1.5, w * 0.4))
+        depth = _ceil_snap(mud.min_w_m)  # Mudroom X-depth
+        if (w - depth) < foy.min_w_m or h < max(foy.min_h_m, mud.min_h_m):
+            return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
         if side == "W":
-            mx = _snap(x0 + depth)
+            mx = x0 + depth
             return [
                 FinalRoom("Mudroom", "service", r.zone, (x0, y0, mx, y1)),
                 FinalRoom("Foyer", "circ", r.zone, (mx, y0, x1, y1)),
             ]
-        mx = _snap(x1 - depth)
+        mx = x1 - depth
         return [
             FinalRoom("Foyer", "circ", r.zone, (x0, y0, mx, y1)),
             FinalRoom("Mudroom", "service", r.zone, (mx, y0, x1, y1)),
         ]
-    depth = _snap(max(1.5, h * 0.4))
+    depth = _ceil_snap(mud.min_h_m)  # Mudroom Y-depth
+    if (h - depth) < foy.min_h_m or w < max(foy.min_w_m, mud.min_w_m):
+        return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
     if side == "S":
-        my = _snap(y0 + depth)
+        my = y0 + depth
         return [
             FinalRoom("Mudroom", "service", r.zone, (x0, y0, x1, my)),
             FinalRoom("Foyer", "circ", r.zone, (x0, my, x1, y1)),
         ]
-    my = _snap(y1 - depth)
+    my = y1 - depth
     return [
         FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, my)),
         FinalRoom("Mudroom", "service", r.zone, (x0, my, x1, y1)),
@@ -197,6 +247,16 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
     by_zone = {r.zone: r for r in result.rects}
     dining = by_zone.get("dining")
     garage = by_zone.get("garage")
+    cut_sides = getattr(result, "cut_sides", {}) or {}
+    # kitchen_laundry cut axis is the SOLVER's decision (it constrained the shape
+    # to match). entry's is read straight from geometry (its table is legal on
+    # both axes). Fall back to geometry only if the solver didn't record one.
+    kl_side = cut_sides.get("kitchen_laundry")
+    if kl_side is None and "kitchen_laundry" in by_zone and dining is not None:
+        kl_side = _side_of(tuple(by_zone["kitchen_laundry"].rect_m), tuple(dining.rect_m))
+    entry_side = None
+    if "entry" in by_zone and garage is not None:
+        entry_side = _side_of(tuple(by_zone["entry"].rect_m), tuple(garage.rect_m))
     rooms: list[FinalRoom] = []
     for zr in result.rects:
         z = zr.zone
@@ -205,9 +265,9 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
         elif z == "children":
             rooms += _slice_children(zr)
         elif z == "kitchen_laundry":
-            rooms += _slice_kitchen(zr, dining)
+            rooms += _slice_kitchen(zr, kl_side)
         elif z == "entry":
-            rooms += _slice_entry(zr, garage)
+            rooms += _slice_entry(zr, entry_side)
         elif z in _SIMPLE_NAME:
             name, cat = _SIMPLE_NAME[z]
             rooms.append(FinalRoom(name, cat, z, tuple(zr.rect_m)))
@@ -215,6 +275,132 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
             name = Z.ZONE_DISPLAY.get(z, z.title())
             rooms.append(FinalRoom(name, "living", z, tuple(zr.rect_m)))
     return rooms
+
+
+# ---------------------------------------------------------------------------
+# legal (w, h) tables (Phase 3)
+#
+# For each COMPOSITE zone, the FULL set of grid (w, h) pairs whose slice is
+# standards-legal — NOT a min-area bounding box. The legal region is a staircase,
+# and a box over a staircase (min_w from one corner, min_h from another) admits
+# illegal shapes. The solver pins the zone's (w, h) to this set exactly, with
+# AddAllowedAssignments.
+#
+# kitchen_laundry / entry cut along whichever axis their director (dining /
+# garage) lies on, so each pair is tagged with the axis it is legal for: ns=1 for
+# the N/S cut, ns=0 for the W/E cut. This is the UNION of the two axes, not the
+# intersection — a shape legal only for the N/S cut is admitted as long as the
+# solver commits to the N/S axis (and records it for the slicer). The old
+# min_w/min_h hedged both axes at once and paid 22.5 m2 for a zone whose rooms
+# need 12.5 (N/S) or 13.5 (W/E).
+# ---------------------------------------------------------------------------
+
+_NS_REP, _WE_REP = "S", "W"  # representative sides for the N/S and W/E cut axes
+_STEPS = range(2, 31)        # candidate dimension in grid units: 1.0 .. 15.0 m
+
+# Composite zones the slicer subdivides.
+_COMPOSITE = {"master_suite", "children", "kitchen_laundry", "entry"}
+# kitchen_laundry alone gets a UNION table + a solver cut-axis var: its
+# intersection (both-axis-legal) would cost 22.5 vs the 12.5/13.5 single axes.
+# entry uses the intersection (0.85*target nearly binds there anyway), so its cut
+# stays axis-agnostic and needs no solver var; master/children are single-axis.
+_AXIAL = {"kitchen_laundry"}
+
+# non-composite zone -> its single room standard (envelope = that room).
+_ZONE_ROOM = {"living": "Living", "dining": "Dining", "office": "Office", "garage": "Garage"}
+
+_PAIRS_CACHE: dict[str, object] = {}
+_MINIMA_CACHE: dict[str, object] = {}
+
+
+def _room_legal(name: str, rect: geom.Rect) -> bool:
+    spec = standards.ROOMS.get(name)
+    if spec is None:
+        return True
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    if w < spec.min_w_m - geom.EPS or h < spec.min_h_m - geom.EPS:
+        return False
+    if w * h < spec.min_area_m2 - geom.EPS:
+        return False
+    short = min(w, h)
+    aspect = max(w, h) / short if short > geom.EPS else float("inf")
+    return aspect <= spec.max_aspect + geom.EPS
+
+
+def _slice_probe(zone_id: str, w: float, h: float, side: str | None) -> list[FinalRoom]:
+    zr = ZoneRect(zone_id, 0.0, 0.0, w, h)
+    if zone_id == "master_suite":
+        return _slice_master(zr)
+    if zone_id == "children":
+        return _slice_children(zr)
+    if zone_id == "kitchen_laundry":
+        return _slice_kitchen(zr, side)
+    if zone_id == "entry":
+        return _slice_entry(zr, side)
+    return []
+
+
+def _legal_1(zone_id: str, w: float, h: float, side: str | None) -> bool:
+    rooms = _slice_probe(zone_id, w, h, side)
+    return len(rooms) >= 2 and all(_room_legal(rm.name, rm.rect) for rm in rooms)
+
+
+def legal_pairs(zone_id: str):
+    """Grid-unit legal (w, h) table for a COMPOSITE zone, else None. Cached.
+
+    kitchen_laundry -> list[(wu, hu, ns)]: the UNION of the two cut axes, ns=1 for
+      the N/S cut and ns=0 for the W/E cut (the solver picks (w,h) AND ns together
+      and ties ns to the Dining side).
+    entry           -> list[(wu, hu)]: the INTERSECTION (legal on BOTH axes), so
+      the cut is axis-agnostic.
+    master_suite / children -> list[(wu, hu)]: single orientation."""
+    if zone_id in _PAIRS_CACHE:
+        return _PAIRS_CACHE[zone_id]
+    if zone_id not in _COMPOSITE:
+        _PAIRS_CACHE[zone_id] = None
+        return None
+    if zone_id in _AXIAL:
+        pairs: list = []
+        for wu in _STEPS:
+            for hu in _STEPS:
+                w, h = wu * GRID_M, hu * GRID_M
+                if _legal_1(zone_id, w, h, _NS_REP):
+                    pairs.append((wu, hu, 1))
+                if _legal_1(zone_id, w, h, _WE_REP):
+                    pairs.append((wu, hu, 0))
+    elif zone_id == "entry":  # intersection: legal on BOTH axes
+        pairs = [
+            (wu, hu)
+            for wu in _STEPS
+            for hu in _STEPS
+            if _legal_1(zone_id, wu * GRID_M, hu * GRID_M, _NS_REP)
+            and _legal_1(zone_id, wu * GRID_M, hu * GRID_M, _WE_REP)
+        ]
+    else:  # master_suite / children: single orientation
+        pairs = [
+            (wu, hu)
+            for wu in _STEPS
+            for hu in _STEPS
+            if _legal_1(zone_id, wu * GRID_M, hu * GRID_M, None)
+        ]
+    _PAIRS_CACHE[zone_id] = pairs
+    return pairs
+
+
+def compute_zone_minima(zone_id: str):
+    """standards.ZoneMinima for a NON-composite zone (its room standard), else
+    None — composite zones use legal_pairs() instead. Cached."""
+    if zone_id in _MINIMA_CACHE:
+        return _MINIMA_CACHE[zone_id]
+    result = None
+    if zone_id not in _COMPOSITE:
+        room = _ZONE_ROOM.get(zone_id)
+        if room is not None:
+            s = standards.ROOMS[room]
+            result = standards.ZoneMinima(s.min_w_m, s.min_h_m, s.min_area_m2, s.max_aspect)
+    _MINIMA_CACHE[zone_id] = result
+    return result
 
 
 # ---------------------------------------------------------------------------

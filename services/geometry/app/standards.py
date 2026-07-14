@@ -189,11 +189,13 @@ ROOMS: dict[str, RoomStandard] = {
 # Zone envelopes: the minimum solver-zone rectangle that slices into legal
 # rooms. The solver constrains ZONES; slicer.py cuts each composite ZONE into
 # ROOMS. Nothing between them checked that the cut children meet their minima,
-# so composite zones were emitting sub-Neufert slivers. This maps each of the
-# eight solver zones to the minimum (w, h) that, run through the ACTUAL
-# _slice_* cut in slicer.py, yields legal rooms — plus a max_aspect loose
-# enough to admit the intended cut. Calibrated by scanning the real slicer
-# over the grid; the numbers are cited to the room minima they derive from.
+# so composite zones were emitting sub-Neufert slivers.
+#
+# These are now COMPUTED, not hand-calibrated: slicer.compute_zone_minima runs
+# the REAL cutters over candidate (w, h) on the grid and returns the smallest
+# envelope whose slice is fully standards-legal. So the envelope re-derives
+# automatically when GRID_M or a cut rule changes, instead of a constant table
+# drifting silently out of sync with the slicer.
 # ---------------------------------------------------------------------------
 
 
@@ -205,65 +207,11 @@ class ZoneMinima:
     max_aspect: float
 
 
-# Zone ids the slicer subdivides (mirror of zones.COMPOSITE_ZONES; duplicated
-# here as bare strings to keep this module free of app-internal imports).
-_COMPOSITE = {"master_suite", "children", "kitchen_laundry", "entry"}
-
-# Which room standard a NON-composite zone maps to directly.
-_ZONE_ROOM = {
-    "living": "Living",
-    "dining": "Dining",
-    "office": "Office",
-    "garage": "Garage",
-}
-
-_COMPOSITE_MINIMA: dict[str, ZoneMinima] = {
-    # master_suite -> Master Bedroom (full-width, south) + a north service strip
-    # cut laterally at the midpoint into Master Bathroom + Walk-in Closet
-    # (_slice_master). Each of the two halves is w/2, so w >= 2*2.1 = 4.2, but
-    # the midpoint snaps to the 0.5 m grid (banker's rounding) so w=4.5 yields a
-    # 2.0 m half; w=5.0 is the first width giving two >=2.1 m halves. The strip
-    # height is service = min(2.5, 0.45h); it must reach the Bathroom's 2.2 m
-    # min, and the bedroom below (h - service) must reach 2.84 m — satisfied
-    # first at h=5.5 (service snaps to 2.5, bedroom = 3.0). 27.5 m2 < 1.20*26.
-    "master_suite": ZoneMinima(5.0, 5.5, 27.5, 2.0),
-    # children -> Bedroom 2 + Bathroom + Bedroom 3 as three horizontal bands
-    # (_slice_children). Bands need h >= 7.0 for the two beds to clear 2.44 m
-    # (2.5 m each) and their 7.43 m2. The MIDDLE Bathroom's depth is
-    # bath = snap(max(1.8, 0.24h)); the 0.24 fraction + snap pin it at 2.0 m for
-    # every h < ~9.5, so Bathroom.depth < 2.2 survives as a warning here — a
-    # slicer-fraction defect (Task 3), NOT fixable by zone size within the area
-    # budget. aspect up to ~3.7 must be allowed so the tall band-stack fits.
-    "children": ZoneMinima(3.0, 7.0, 21.0, 4.0),
-    # kitchen_laundry -> Kitchen (keeps the dining side) + Laundry, cut along
-    # whichever axis dining lies on (_slice_kitchen). The cut axis is decided
-    # during the solve, so the envelope must satisfy BOTH: the N/S cut needs
-    # h>=5.0 (Kitchen keeps 3.0 m depth), the W/E cut needs w>=4.5 (Kitchen
-    # keeps 2.4+ m width after a 2.0 m Laundry). 22.5 m2 < 1.20*20.
-    "kitchen_laundry": ZoneMinima(4.5, 5.0, 22.5, 2.5),
-    # entry -> Foyer + Mudroom (Mudroom toward the garage), cut along whichever
-    # axis the garage lies on (_slice_entry). (3.0, 4.5) is the smallest that
-    # clears Mudroom's 1.8 m depth in the N/S cut while fitting 1.20*12 = 14.4.
-    # Foyer/Mudroom max_aspect is 3.0, but a W/E cut halves the width so a tall
-    # entry strip makes them slender (aspect > 3) — the solver can stretch entry
-    # past this min, so that aspect warning is a shape defect (Task 3). aspect
-    # cap kept loose (4.0) so the strip can still tile the plan.
-    "entry": ZoneMinima(3.0, 4.5, 13.5, 4.0),
-}
-
-
 def zone_minima(zone_id: str) -> ZoneMinima | None:
-    """Minimum solver-zone envelope (w, h, area, aspect) for a solver zone id.
+    """Minimum solver-zone envelope (w, h, area, aspect) for a solver zone id,
+    computed from the actual slicer. Unknown ids (e.g. the inert "circulation")
+    return None, leaving the solver on its declared Space minima and default
+    aspect. Imported lazily because slicer.py imports this module."""
+    from . import slicer
 
-    Composite zones return the calibrated envelope that slices legally (above);
-    non-composite zones return their room standard directly. Unknown ids (e.g.
-    the inert "circulation") return None, leaving the solver on its declared
-    Space minima and default aspect.
-    """
-    if zone_id in _COMPOSITE_MINIMA:
-        return _COMPOSITE_MINIMA[zone_id]
-    room = _ZONE_ROOM.get(zone_id)
-    if room is None:
-        return None
-    s = ROOMS[room]
-    return ZoneMinima(s.min_w_m, s.min_h_m, s.min_area_m2, s.max_aspect)
+    return slicer.compute_zone_minima(zone_id)

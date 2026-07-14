@@ -68,6 +68,11 @@ class SolveResult:
     # House footprint (metres) within the plot; the residual strip is setback.
     # None when the solve was infeasible.
     footprint_m: tuple[float, float, float, float] | None = None
+    # Cut axis the SOLVER chose for a composite zone, as the director's side
+    # ("N"/"S"/"E"/"W"). The slicer reads this instead of re-deriving it, so the
+    # zone's (w,h) — constrained to a shape legal for THIS axis — always matches
+    # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
+    cut_sides: dict[str, str] = field(default_factory=dict)
 
 
 class _ZoneVars:
@@ -194,6 +199,41 @@ def _forbid_adjacent(
     m.AddBoolOr(sels)
 
 
+def _tie_cut_axis(
+    m: cp_model.CpModel, a: _ZoneVars, b: _ZoneVars, min_len: int, ns: cp_model.IntVar, tag: str
+) -> dict[str, cp_model.IntVar]:
+    """Force a required adjacency between a (a composite zone) and b (its
+    director) AND bind `ns` to the axis: ns=1 iff b is North/South of a. Returns
+    the four directional bools (b relative to a) so the caller can read the exact
+    side post-solve. This is what lets the slicer stop inferring the cut axis: the
+    solver commits to it here, consistently with a's shape table."""
+    y_lo = m.NewIntVar(0, 10_000, f"{tag}_ylo")
+    y_hi = m.NewIntVar(0, 10_000, f"{tag}_yhi")
+    m.AddMaxEquality(y_lo, [a.y0, b.y0])
+    m.AddMinEquality(y_hi, [a.y1, b.y1])
+    x_lo = m.NewIntVar(0, 10_000, f"{tag}_xlo")
+    x_hi = m.NewIntVar(0, 10_000, f"{tag}_xhi")
+    m.AddMaxEquality(x_lo, [a.x0, b.x0])
+    m.AddMinEquality(x_hi, [a.x1, b.x1])
+
+    bE = m.NewBoolVar(f"{tag}_bE")  # director east of a  -> W/E cut
+    m.Add(a.x1 == b.x0).OnlyEnforceIf(bE)
+    m.Add(y_hi - y_lo >= min_len).OnlyEnforceIf(bE)
+    bW = m.NewBoolVar(f"{tag}_bW")  # director west
+    m.Add(b.x1 == a.x0).OnlyEnforceIf(bW)
+    m.Add(y_hi - y_lo >= min_len).OnlyEnforceIf(bW)
+    bN = m.NewBoolVar(f"{tag}_bN")  # director north of a -> N/S cut
+    m.Add(a.y1 == b.y0).OnlyEnforceIf(bN)
+    m.Add(x_hi - x_lo >= min_len).OnlyEnforceIf(bN)
+    bS = m.NewBoolVar(f"{tag}_bS")  # director south
+    m.Add(b.y1 == a.y0).OnlyEnforceIf(bS)
+    m.Add(x_hi - x_lo >= min_len).OnlyEnforceIf(bS)
+
+    m.AddBoolOr([bE, bW, bN, bS])          # the adjacency itself (hard-required)
+    m.AddMaxEquality(ns, [bN, bS])         # ns == (director is N or S)
+    return {"E": bE, "W": bW, "N": bN, "S": bS}
+
+
 _REQUIRED_PAIRS: set[frozenset] = {frozenset(p) for p in Z.REQUIRED_ADJ}
 
 
@@ -285,35 +325,63 @@ def _solve_once(
     m.Add(fp.area >= int(math.floor(FOOTPRINT_LO * house_cells)))
     m.Add(fp.area <= min(plot_cells, int(math.ceil(FOOTPRINT_HI * house_cells))))
 
+    from . import slicer  # lazy: slicer imports solver (GRID_M, ZoneRect)
+
     present: list[ZoneId] = [z for z in Z.ZONE_ORDER if program.space(z) is not None]
     zv: dict[ZoneId, _ZoneVars] = {}
+    ns_vars: dict[ZoneId, cp_model.IntVar] = {}  # kitchen_laundry cut-axis bit
     for zid in present:
         sp = program.space(zid)
         assert sp is not None
-        # Zone minima: the larger of the program's declared Space minima and the
-        # envelope standards.zone_minima derives so the slicer's cut yields legal
-        # rooms (composite zones were emitting sub-Neufert slivers otherwise).
-        zm = standards.zone_minima(zid)
-        min_w_m, min_h_m = sp.min_w_m, sp.min_h_m
-        aspect = sp.max_aspect if sp.max_aspect is not None else DEFAULT_MAX_ASPECT
-        if zm is not None:
-            min_w_m = max(min_w_m, zm.min_w_m)
-            min_h_m = max(min_h_m, zm.min_h_m)
-            if sp.max_aspect is None:
-                aspect = zm.max_aspect
-        min_w = max(1, _ceil_u(min_w_m))
-        min_h = max(1, _ceil_u(min_h_m))
-        v = _ZoneVars(m, zid, W, H, min_w, min_h)
-        # area window in cells
         target_cells = sp.target_m2 / (GRID_M * GRID_M)
-        lo = max(min_w * min_h, int(math.floor(AREA_LO * target_cells)))
-        hi = min(plot_cells, int(math.ceil(AREA_HI * target_cells)))
-        m.Add(v.area >= lo)
-        m.Add(v.area <= hi)
-        # per-zone aspect (Space.max_aspect overrides standards; else global default)
-        asp_i = int(round(100 * aspect))
-        m.Add(100 * v.w <= asp_i * v.h)
-        m.Add(100 * v.h <= asp_i * v.w)
+        lo_area = int(math.floor(AREA_LO * target_cells))
+        hi_area = min(plot_cells, int(math.ceil(AREA_HI * target_cells)))
+
+        lp = slicer.legal_pairs(zid)
+        if lp:
+            # Respect the brief's DECLARED minima on top of the standards-legal
+            # table: the union table may include shapes narrower than the program
+            # asked for (e.g. a 2.5 m kitchen on the N/S cut vs a declared 4.0 m).
+            dw = max(1, _ceil_u(sp.min_w_m))
+            dh = max(1, _ceil_u(sp.min_h_m))
+            lp = [t for t in lp if t[0] >= dw and t[1] >= dh]
+        if lp:
+            # COMPOSITE: pin (w, h) to the EXACT set of shapes whose slice is
+            # standards-legal (Phase 3 table) — not a min_w/min_h box, which over
+            # a staircase region admits illegal shapes. Shape legality replaces
+            # the per-zone aspect bound. kitchen_laundry's table is axis-tagged
+            # (w, h, ns); ns is tied to the Dining side below.
+            min_w = max(1, min(t[0] for t in lp))
+            min_h = max(1, min(t[1] for t in lp))
+            v = _ZoneVars(m, zid, W, H, min_w, min_h)
+            m.Add(v.area >= lo_area)
+            m.Add(v.area <= hi_area)
+            if len(lp[0]) == 3:  # axial (kitchen_laundry): (w, h, ns)
+                ns = m.NewBoolVar(f"{zid}_ns")
+                m.AddAllowedAssignments([v.w, v.h, ns], lp)
+                ns_vars[zid] = ns
+            else:
+                m.AddAllowedAssignments([v.w, v.h], lp)
+        else:
+            # NON-COMPOSITE: declared Space minima widened by the room standard,
+            # plus the aspect bound.
+            zm = standards.zone_minima(zid)
+            min_w_m, min_h_m = sp.min_w_m, sp.min_h_m
+            aspect = sp.max_aspect if sp.max_aspect is not None else DEFAULT_MAX_ASPECT
+            if zm is not None:
+                min_w_m = max(min_w_m, zm.min_w_m)
+                min_h_m = max(min_h_m, zm.min_h_m)
+                if sp.max_aspect is None:
+                    aspect = zm.max_aspect
+            min_w = max(1, _ceil_u(min_w_m))
+            min_h = max(1, _ceil_u(min_h_m))
+            v = _ZoneVars(m, zid, W, H, min_w, min_h)
+            m.Add(v.area >= max(min_w * min_h, lo_area))
+            m.Add(v.area <= hi_area)
+            asp_i = int(round(100 * aspect))
+            m.Add(100 * v.w <= asp_i * v.h)
+            m.Add(100 * v.h <= asp_i * v.w)
+
         # zone contained within the footprint (not the plot)
         m.Add(v.x0 >= fp.x0)
         m.Add(v.x1 <= fp.x1)
@@ -329,11 +397,19 @@ def _solve_once(
     share_min = _ceil_u(Z.REQUIRED_SHARE_M)
     gap_u = _ceil_u(Z.FORBIDDEN_GAP_M)
 
-    # required adjacency (hard, always-on — see zones.REQUIRED_ADJ docstring)
+    # required adjacency (hard, always-on — see zones.REQUIRED_ADJ docstring).
+    # For a composite zone with a cut-axis var (kitchen_laundry), tie the axis to
+    # the director's side here so the shape table and the cut stay consistent.
+    cut_axis_bools: dict[ZoneId, dict[str, cp_model.IntVar]] = {}
     for a, b in Z.REQUIRED_ADJ:
         if a in zv and b in zv:
-            sh = _share_wall(m, zv[a], zv[b], share_min, f"req_{a}_{b}")
-            m.Add(sh == 1)
+            if a in ns_vars:
+                cut_axis_bools[a] = _tie_cut_axis(
+                    m, zv[a], zv[b], share_min, ns_vars[a], f"req_{a}_{b}"
+                )
+            else:
+                sh = _share_wall(m, zv[a], zv[b], share_min, f"req_{a}_{b}")
+                m.Add(sh == 1)
 
     # forbidden adjacency (hard). Program-controlled: program.adjacency.avoid,
     # defaulting to zones.DEFAULT_AVOID when the caller left it empty.
@@ -428,6 +504,7 @@ def _solve_once(
     feasible = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
     rects: list[ZoneRect] = []
     footprint_m: tuple[float, float, float, float] | None = None
+    cut_sides: dict[str, str] = {}
     if feasible:
         for zid in present:
             v = zv[zid]
@@ -446,6 +523,12 @@ def _solve_once(
             solver.Value(fp.x1) * GRID_M,
             solver.Value(fp.y1) * GRID_M,
         )
+        # the cut axis the solver committed to, as the director's side
+        for zid, bools in cut_axis_bools.items():
+            for side, bvar in bools.items():
+                if solver.Value(bvar) == 1:
+                    cut_sides[zid] = side
+                    break
     human_obj = solver.ObjectiveValue() / plot_cells if feasible else float("-inf")
 
     return SolveResult(
@@ -459,4 +542,5 @@ def _solve_once(
         plot_d_m=program.plot.depth_m,
         wall_time_s=solver.WallTime(),
         footprint_m=footprint_m,
+        cut_sides=cut_sides,
     )

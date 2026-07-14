@@ -1,15 +1,14 @@
-"""Task 2.5 cross-fixture findings, locked as regression tests.
+"""Task 3 outcomes, verified on BOTH fixtures.
 
-The over-constrained tight plot (16x12) and the roomy plot (20x15) share an
-IDENTICAL program (same targets, footprint_target_m2=160). Running the same
-asserts on both separates fixture artifacts from real code behaviour:
-
-  - The footprint CANNOT reach its 160 m2 target on either plot: the eight
-    Neufert-legal zone minima only tile a rectangle >= ~176 m2 (1.10x target).
-    That floor is plot-independent, so it is REAL, not a tight-plot artifact.
-  - The children zone sits at its AREA_LO area-window floor (~0.86x) on both.
-  - The children Bathroom's 2.0 m depth (< 2.2 Neufert) survives on both — a
-    slicer cut-fraction defect (Task 3), independent of plot and zone size.
+The slicer's ceil-snap + dimension cuts + legal-shape tables make every sliced
+room meet its per-room Neufert minimum, so:
+  - Neufert is now a HARD gate and produces ZERO violations (incl. the children
+    Bathroom, whose depth ceil-snaps 2.2 -> 2.5 m);
+  - the kitchen_laundry UNION table (its cut axis is a solver var) takes the
+    house off the old 1.15 footprint rail (184 m2) down to ~1.10 (176 m2). The
+    remaining gap to target is capped by the brief's declared kitchen min_w=4.0
+    and the 0.85*target area floor (garage-dominated) — a program-level
+    reconciliation (Task 4), not a slicer defect.
 """
 
 import pytest
@@ -20,8 +19,6 @@ from app.validator import validate
 
 
 def _solve(program):
-    # Full budget + workers=1: these tests read EXACT optimum values, so the
-    # roomy solve must run to OPTIMAL (~10s), not the geometry-invariant cap.
     return S.solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
 
 
@@ -32,39 +29,39 @@ def _footprint_area(r):
 
 @pytest.fixture(scope="session")
 def solved(program):
-    # One solve per fixture, shared by the three value tests below.
     return _solve(program)
 
 
-def test_footprint_cannot_reach_target_on_either_plot(program, solved):
-    # >= 1.10x target on both: the packing floor, not the plot, is binding.
-    ratio = _footprint_area(solved) / program.footprint_target_m2
-    assert ratio >= 1.10 - 1e-6, ratio
-
-
-def test_children_zone_sits_at_its_area_floor(program, solved):
-    # children is the most area-expensive zone (tallest min_h), so the objective
-    # shrinks it to AREA_LO (0.85x). Same on both plots -> not a fixture artifact.
-    child = next(z for z in solved.rects if z.zone == "children")
-    achieved = (child.x1 - child.x0) * (child.y1 - child.y0)
-    ratio = achieved / program.space("children").target_m2
-    assert 0.84 <= ratio <= 0.88, ratio
-
-
-def test_only_children_bathroom_neufert_warning_survives(program, solved):
-    # The master/entry composite slivers are fixed (Task 2); what remains on BOTH
-    # plots is the children Bathroom depth — slicer.py's 0.24 cut fraction.
+def test_zero_neufert_violations_and_valid(program, solved):
     v = validate(build_layout(solved, program), program)
-    neufert = [w for w in v.warnings if "Neufert" in w]
-    assert len(neufert) == 1, neufert
-    assert "Bathroom" in neufert[0] and "depth" in neufert[0], neufert
+    assert [e for e in v.errors if "Neufert" in e] == [], v.errors
+    assert v.ok, v.errors
 
 
-@pytest.mark.parametrize("cap,feasible_expected", [(1.10, True), (1.075, False)])
-def test_packing_floor_is_176_on_both_plots(program, monkeypatch, cap, feasible_expected):
-    # The real feasibility floor: a footprint capped at 1.10x target (176 m2)
-    # still tiles; at 1.075x (172 m2) it does not. Identical on both plots, so
-    # "176 m2 is infeasible" is false — 176 is the FLOOR, not a wall.
-    monkeypatch.setattr(S, "FOOTPRINT_HI", cap)
-    r = _solve(program)
-    assert r.feasible is feasible_expected, (cap, r.status)
+def test_footprint_off_the_old_rail(program, solved):
+    # The old min_w/min_h hedge pinned the house at the 1.15 rail (184 m2). The
+    # union tables drop it below that on both plots.
+    ratio = _footprint_area(solved) / program.footprint_target_m2
+    assert ratio < 1.15 - 1e-6, ratio
+
+
+def test_solver_records_kitchen_cut_axis(program, solved):
+    # The slicer no longer infers the cut from _side_of; the solver commits to it.
+    assert solved.cut_sides.get("kitchen_laundry") in ("N", "S", "E", "W")
+
+
+def test_habitable_excludes_only_the_garage(program, solved):
+    layout = build_layout(solved, program)
+    # program estimate (Task 3): every space target except the garage, by id.
+    assert program.habitable_area_m2 == sum(
+        s.target_m2 for s in program.spaces if s.id != "garage"
+    )
+    # as-sliced: the Garage room is excluded, nothing else.
+    non_garage = sum(
+        (r.rect_m[2] - r.rect_m[0]) * (r.rect_m[3] - r.rect_m[1])
+        for r in layout.rooms
+        if r.name != "Garage"
+    )
+    assert layout.habitable_area_m2 == pytest.approx(non_garage)
+    assert any(r.name == "Garage" for r in layout.rooms)
+    assert layout.habitable_area_m2 < _footprint_area(solved)

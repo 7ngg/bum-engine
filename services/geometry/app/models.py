@@ -68,12 +68,6 @@ class Adjacency(BaseModel):
     avoid: list[list[ZoneId]] = Field(default_factory=list)
 
 
-# Categories that are gross footprint but NOT habitable floor ("общая
-# площадь"): the garage (service) and any outdoor space are excluded when
-# summing habitable area.
-_NON_HABITABLE = ("service", "outdoor")
-
-
 class Program(BaseModel):
     version: Literal["1.0.0", "1.1.0", "1.2.0"] = PROGRAM_SCHEMA_VERSION
     plot: Plot
@@ -105,10 +99,12 @@ class Program(BaseModel):
 
     @property
     def habitable_area_m2(self) -> float:
-        """Общая площадь: sum of space targets over habitable categories
-        (excludes service/outdoor — i.e. the garage). Derived at load and
-        reported; not a solver constraint yet."""
-        return sum(s.target_m2 for s in self.spaces if s.category not in _NON_HABITABLE)
+        """Общая площадь (habitable floor): sum of space targets EXCLUDING the
+        Garage, keyed by space id — NOT by Category. A composite zone's single
+        Category is lossy: kitchen_laundry is tagged "service" but its Kitchen is
+        habitable, so a category filter would wrongly drop it. This is the brief's
+        estimate; Layout.habitable_area_m2 is the as-sliced built figure."""
+        return sum(s.target_m2 for s in self.spaces if s.id != "garage")
 
     @model_validator(mode="after")
     def _warn_footprint_reconciliation(self) -> "Program":
@@ -191,6 +187,17 @@ class Layout(BaseModel):
     entry: Door
     terrace: Terrace | None = None
     warnings: list[str] = Field(default_factory=list)
+
+    @property
+    def habitable_area_m2(self) -> float:
+        """As-sliced habitable floor: sum of finished-room areas EXCLUDING the
+        Garage (by name). Computed from the actual rooms, not the brief targets,
+        and not by Category (a composite zone's Category is lossy)."""
+        return sum(
+            (r.rect_m[2] - r.rect_m[0]) * (r.rect_m[3] - r.rect_m[1])
+            for r in self.rooms
+            if r.name != "Garage"
+        )
 
     def dump(self) -> dict:
         """Serialize with `from` alias restored for wire/schema compatibility."""

@@ -27,31 +27,15 @@ def test_standards_are_positive_and_internally_consistent():
         assert spec.max_aspect >= 1.0, name
 
 
-def test_neufert_warnings_after_zone_minima(program, solve_time_s):
-    # After Task 2's footprint + zone-minima work, four of the five original
-    # composite-slice violations are gone: Master Bathroom and Walk-in Closet
-    # (master_suite now >= 5.0 m wide), and Foyer and Mudroom (entry aspect no
-    # longer forced slender). What SURVIVES is the children Bathroom, whose
-    # depth is pinned at 2.0 m by slicer.py's 0.24 cut fraction independent of
-    # zone size — a Task 3 finding, not a Task 2 failure. Verified on BOTH the
-    # tight and roomy plots (Task 2.5): the surviving warning is plot-independent.
+def test_no_neufert_violations_after_slicer_fix(program, solve_time_s):
+    # Task 3: the slicer's ceil-snap + dimension cuts + legal-shape tables make
+    # every sliced room meet its per-room Neufert minimum, so the validator's
+    # Neufert checks are now HARD errors and produce ZERO violations — including
+    # the children Bathroom (depth ceil-snapped 2.2 -> 2.5). Holds on both plots.
     r = solve(program, "gW_eN", seed=1, time_limit_s=solve_time_s, workers=1)
     layout = build_layout(r, program)
     v = validate(layout, program)
 
-    assert v.ok, "Neufert checks are warnings only; must not affect the hard gate"
-
-    violating_rooms = set()
-    for w in v.warnings:
-        for name in standards.ROOMS:
-            if f"room {name!r}" in w:
-                violating_rooms.add(name)
-
-    # the Task 2 win: these composite slivers are now legal
-    assert {"Master Bathroom", "Walk-in Closet", "Mudroom", "Foyer"}.isdisjoint(violating_rooms), (
-        f"expected the master/entry slivers fixed, got: {v.warnings}"
-    )
-    # the surviving slicer-fraction defect (Task 3)
-    assert "Bathroom" in violating_rooms, f"expected children Bathroom to survive, got: {v.warnings}"
-    # strictly fewer than the original five
-    assert len(violating_rooms) < 5
+    neufert_errors = [e for e in v.errors if "Neufert" in e]
+    assert neufert_errors == [], neufert_errors
+    assert v.ok, v.errors
