@@ -58,7 +58,8 @@ def _load_golden() -> dict | None:
     return json.loads(GOLDEN.read_text()) if GOLDEN.exists() else None
 
 
-def test_golden_invariants_portable(program):
+def test_golden_invariants_portable(tight_program):
+    program = tight_program
     r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
     assert r.status == "OPTIMAL"
     assert r.objective == EXPECTED_OBJECTIVE
@@ -104,7 +105,8 @@ _toolchain_mismatch = _golden is not None and _golden.get("toolchain") != _curre
         f"coordinates non-portable across toolchains (see test_golden_invariants_portable)"
     ),
 )
-def test_golden_exact_coordinates(program):
+def test_golden_exact_coordinates(tight_program):
+    program = tight_program
     r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
     sig = _room_signature(build_layout(r, program))
     if _golden is None:

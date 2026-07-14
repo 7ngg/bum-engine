@@ -27,14 +27,15 @@ def test_standards_are_positive_and_internally_consistent():
         assert spec.max_aspect >= 1.0, name
 
 
-def test_neufert_warnings_after_zone_minima(program):
+def test_neufert_warnings_after_zone_minima(program, solve_time_s):
     # After Task 2's footprint + zone-minima work, four of the five original
     # composite-slice violations are gone: Master Bathroom and Walk-in Closet
     # (master_suite now >= 5.0 m wide), and Foyer and Mudroom (entry aspect no
     # longer forced slender). What SURVIVES is the children Bathroom, whose
     # depth is pinned at 2.0 m by slicer.py's 0.24 cut fraction independent of
-    # zone size — a Task 3 finding, not a Task 2 failure.
-    r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
+    # zone size — a Task 3 finding, not a Task 2 failure. Verified on BOTH the
+    # tight and roomy plots (Task 2.5): the surviving warning is plot-independent.
+    r = solve(program, "gW_eN", seed=1, time_limit_s=solve_time_s, workers=1)
     layout = build_layout(r, program)
     v = validate(layout, program)
 

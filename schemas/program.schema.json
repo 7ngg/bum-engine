@@ -2,12 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bum-engine/schemas/program.schema.json",
   "title": "Program",
-  "description": "Design brief extracted from natural language. Solver-facing input. version 1.0.0",
+  "description": "Design brief extracted from natural language. Solver-facing input. version 1.2.0",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "plot", "orientation", "target_area_m2", "floors", "spaces", "adjacency"],
+  "required": ["version", "plot", "orientation", "floors", "spaces", "adjacency"],
+  "anyOf": [
+    { "required": ["footprint_target_m2"] },
+    { "required": ["target_area_m2"] }
+  ],
   "properties": {
-    "version": { "type": "string", "enum": ["1.0.0", "1.1.0"] },
+    "version": { "type": "string", "enum": ["1.0.0", "1.1.0", "1.2.0"] },
     "plot": {
       "type": "object",
       "additionalProperties": false,
@@ -21,7 +25,16 @@
       "description": "Compass direction the front/street facade faces.",
       "enum": ["N", "E", "S", "W"]
     },
-    "target_area_m2": { "type": "number", "exclusiveMinimum": 0 },
+    "footprint_target_m2": {
+      "description": "Gross footprint area, garage included; bounds the solver's footprint band. 1.2.0 name.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "target_area_m2": {
+      "description": "Deprecated 1.0.0/1.1.0 alias of footprint_target_m2. Accepted on input for back-compat.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
     "floors": { "type": "integer", "minimum": 1, "maximum": 4 },
     "spaces": {
       "type": "array",

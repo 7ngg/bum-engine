@@ -14,7 +14,8 @@ from app.validator import validate
 @pytest.fixture(scope="module")
 def layout(request):
     prog = request.getfixturevalue("program")
-    r = solve(prog, "gW_eN", seed=1, time_limit_s=12)
+    tl = request.getfixturevalue("solve_time_s")  # roomy is capped (feasible is enough)
+    r = solve(prog, "gW_eN", seed=1, time_limit_s=tl)
     return build_layout(r, prog)
 
 
@@ -32,8 +33,8 @@ def test_overlap_rejected(layout, program):
     assert any("overlap" in e for e in v.errors)
 
 
-def test_master_kitchen_adjacency_rejected(program):
-    r = solve(program, "gW_eN", seed=1, time_limit_s=12)
+def test_master_kitchen_adjacency_rejected(program, solve_time_s):
+    r = solve(program, "gW_eN", seed=1, time_limit_s=solve_time_s)
     lay = build_layout(r, program)
     bad = lay.model_copy(deep=True)
     kitchen = next(rm for rm in bad.rooms if rm.name == "Kitchen")

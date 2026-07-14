@@ -1,6 +1,13 @@
 """Program.adjacency is now live: solver.py reads it instead of hardcoded
 zones.py constants. REQUIRED_ADJ stays hard and non-LLM-controllable."""
 
+"""TIGHT-ONLY: these check the solver's adjacency objective bookkeeping (empty
+adjacency reproduces the defaults; a new pair moves the objective; an
+already-required pair doesn't double-count; a contradictory avoid degrades
+gracefully). That's plot-independent solver logic and needs the TRUE optimum
+for the objective comparisons, so it runs on the fast tight fixture only —
+the roomy plot would add ~10s/solve for no new signal (see test_report)."""
+
 import copy
 import json
 from pathlib import Path
@@ -18,7 +25,8 @@ def raw_program() -> dict:
     return json.loads((DATA / "program.example.json").read_text())
 
 
-def test_empty_adjacency_reproduces_default_objective(raw_program, program):
+def test_empty_adjacency_reproduces_default_objective(raw_program, tight_program):
+    program = tight_program
     # program.example.json's adjacency is spelled out explicitly, but it's
     # content-identical to zones.DEFAULT_DESIRABLE/DEFAULT_SEMI/DEFAULT_AVOID.
     # A program with adjacency stripped entirely must solve to the same
@@ -34,7 +42,8 @@ def test_empty_adjacency_reproduces_default_objective(raw_program, program):
     assert via_defaults.objective == base.objective
 
 
-def test_extra_desirable_pair_changes_objective(raw_program, program):
+def test_extra_desirable_pair_changes_objective(raw_program, tight_program):
+    program = tight_program
     # office/master_suite share no wall requirement today (neither required
     # nor in the default desirable/semi lists) — rewarding it is new information.
     base = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
@@ -48,7 +57,8 @@ def test_extra_desirable_pair_changes_objective(raw_program, program):
     assert r2.objective != base.objective
 
 
-def test_required_adj_pair_in_desirable_does_not_inflate_objective(raw_program, program):
+def test_required_adj_pair_in_desirable_does_not_inflate_objective(raw_program, tight_program):
+    program = tight_program
     # kitchen_laundry-dining is hard-required (zones.REQUIRED_ADJ). Listing it
     # again under desirable must not double-count: solver.py's dedupe against
     # REQUIRED_ADJ should make this a no-op on the objective.

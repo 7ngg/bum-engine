@@ -7,12 +7,19 @@ contract used across service boundaries.
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
+# The layout.json wire version — shared with schemas/layout.schema.json and
+# revit/RevitBuilder/LayoutModel.cs, both unchanged this task, so it stays 1.1.0.
 SCHEMA_VERSION = "1.1.0"
-SUPPORTED_VERSIONS = ("1.0.0", "1.1.0")
+# program.json forked to 1.2.0 for the target_area_m2 -> footprint_target_m2
+# rename (additive; 1.0.0/1.1.0 still load). The layout contract did not change,
+# so the two versions are no longer in lockstep.
+PROGRAM_SCHEMA_VERSION = "1.2.0"
+SUPPORTED_VERSIONS = ("1.0.0", "1.1.0", "1.2.0")
 
 ZoneId = Literal[
     "living",
@@ -61,20 +68,63 @@ class Adjacency(BaseModel):
     avoid: list[list[ZoneId]] = Field(default_factory=list)
 
 
+# Categories that are gross footprint but NOT habitable floor ("общая
+# площадь"): the garage (service) and any outdoor space are excluded when
+# summing habitable area.
+_NON_HABITABLE = ("service", "outdoor")
+
+
 class Program(BaseModel):
-    version: Literal["1.0.0", "1.1.0"] = SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0", "1.2.0"] = PROGRAM_SCHEMA_VERSION
     plot: Plot
     orientation: Orientation
-    target_area_m2: float = Field(gt=0)
+    # GROSS FOOTPRINT, GARAGE INCLUDED — the area the solver's footprint band
+    # bounds (a rectangle that physically contains the garage). 1.2.0 renamed
+    # this from target_area_m2; that name stays a read alias (below) and an
+    # accepted input key, so 1.0.0/1.1.0 documents and solver.py still resolve.
+    footprint_target_m2: float = Field(
+        gt=0, validation_alias=AliasChoices("footprint_target_m2", "target_area_m2")
+    )
     floors: int = Field(ge=1, le=4)
     spaces: list[Space] = Field(min_length=1)
     adjacency: Adjacency = Field(default_factory=Adjacency)
+
+    model_config = {"populate_by_name": True}
 
     def space(self, zone_id: ZoneId) -> Space | None:
         for s in self.spaces:
             if s.id == zone_id:
                 return s
         return None
+
+    @property
+    def target_area_m2(self) -> float:
+        """Deprecated 1.0.0/1.1.0 name for footprint_target_m2. Kept so
+        solver.py and older documents keep resolving unchanged."""
+        return self.footprint_target_m2
+
+    @property
+    def habitable_area_m2(self) -> float:
+        """Общая площадь: sum of space targets over habitable categories
+        (excludes service/outdoor — i.e. the garage). Derived at load and
+        reported; not a solver constraint yet."""
+        return sum(s.target_m2 for s in self.spaces if s.category not in _NON_HABITABLE)
+
+    @model_validator(mode="after")
+    def _warn_footprint_reconciliation(self) -> "Program":
+        # Gemini fills footprint_target_m2 and the per-space targets
+        # independently; nothing else reconciles them. Warn (not error) on a
+        # gross mismatch so the footprint band isn't silently un-tileable.
+        total = sum(s.target_m2 for s in self.spaces)
+        ft = self.footprint_target_m2
+        if ft > 0 and abs(total - ft) > 0.15 * ft:
+            warnings.warn(
+                f"space targets sum to {total:.0f} m2 but footprint_target_m2 is "
+                f"{ft:.0f} m2 ({abs(total - ft) / ft * 100:.0f}% off); the footprint "
+                f"band may not tile cleanly",
+                stacklevel=2,
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
