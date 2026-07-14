@@ -20,7 +20,12 @@ from .models import Layout, Program
 
 MIN_ROOM_M = 0.9
 MIN_DOOR_WALL = 0.8
-COVERAGE_MIN = 0.9
+# Coverage is now measured against the house FOOTPRINT (the bounding box of the
+# rooms), not the plot: a house really is ~100% internally covered, and the
+# plot now carries setback the house doesn't fill. 0.95 leaves headroom for the
+# small void that free-rectangle packing can't avoid — the space Task 3's
+# circulation will occupy.
+COVERAGE_MIN = 0.95
 MASTER_ROOMS = {"Master Bedroom", "Master Bathroom", "Walk-in Closet"}
 KITCHEN_ROOMS = {"Kitchen"}
 GARAGE_ROOMS = {"Garage"}
@@ -71,11 +76,30 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
         if (x1 - x0) < MIN_ROOM_M - geom.EPS or (y1 - y0) < MIN_ROOM_M - geom.EPS:
             errors.append(f"room {rm.name!r} below min dimension: {x1 - x0:.2f} x {y1 - y0:.2f} m")
 
-    # 4. coverage
+    # 4. coverage — against the house FOOTPRINT (bounding box of the rooms),
+    #    which the zones tile; the residual plot area is setback. Also assert
+    #    the footprint sits within the plot and holds no large unassigned void.
     covered = sum(geom.area(r) for r in rects)
-    coverage = covered / (W * D) if W * D else 0.0
-    if coverage < COVERAGE_MIN - geom.EPS:
-        errors.append(f"coverage {coverage:.3f} below minimum {COVERAGE_MIN}")
+    if rects:
+        fx0 = min(r[0] for r in rects)
+        fy0 = min(r[1] for r in rects)
+        fx1 = max(r[2] for r in rects)
+        fy1 = max(r[3] for r in rects)
+        footprint_area = (fx1 - fx0) * (fy1 - fy0)
+        coverage = covered / footprint_area if footprint_area else 0.0
+        # footprint wholly within the plot
+        if fx0 < -geom.EPS or fy0 < -geom.EPS or fx1 > W + geom.EPS or fy1 > D + geom.EPS:
+            errors.append(f"footprint {[fx0, fy0, fx1, fy1]} extends outside plot {W}x{D}")
+        # no large unassigned region inside the footprint (the rooms fill it).
+        # A small residual is the un-modelled circulation Task 3 will place.
+        if coverage < COVERAGE_MIN - geom.EPS:
+            errors.append(
+                f"footprint coverage {coverage:.3f} below minimum {COVERAGE_MIN} "
+                f"({footprint_area - covered:.1f} m2 unassigned inside the house)"
+            )
+    else:
+        coverage = 0.0
+        errors.append("no rooms")
 
     # 5. forbidden adjacencies (master<->kitchen, garage<->living)
     _check_forbidden(layout, MASTER_ROOMS, KITCHEN_ROOMS, "master suite", "kitchen", errors)

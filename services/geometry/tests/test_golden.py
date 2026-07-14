@@ -26,14 +26,13 @@ from app.solver import solve
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 
-EXPECTED_OBJECTIVE = 1452.0
+EXPECTED_OBJECTIVE = 1038.875
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
     "Bedroom 2", "Bedroom 3", "Bathroom",
     "Office", "Foyer", "Mudroom", "Garage",
 }
-EXPECTED_COVERAGE = 1.0
 
 
 def _current_toolchain() -> dict:
@@ -80,8 +79,17 @@ def test_golden_invariants_portable(program):
     assert geom.adjacent(room("Kitchen"), room("Dining"), Z.REQUIRED_SHARE_M)
     assert geom.adjacent(room("Dining"), room("Living"), Z.REQUIRED_SHARE_M)
 
-    coverage = sum(geom.area(rc) for rc in rects) / (layout.plot.width_m * layout.plot.depth_m)
-    assert coverage == EXPECTED_COVERAGE
+    # Coverage is now measured against the footprint (room bounding box), which
+    # the zones tile to ~0.97; the exact value depends on which tied optimum the
+    # toolchain lands on, so assert the portable gate, not an exact figure.
+    fx0 = min(rc[0] for rc in rects)
+    fy0 = min(rc[1] for rc in rects)
+    fx1 = max(rc[2] for rc in rects)
+    fy1 = max(rc[3] for rc in rects)
+    coverage = sum(geom.area(rc) for rc in rects) / ((fx1 - fx0) * (fy1 - fy0))
+    assert coverage >= 0.95
+    # the house no longer fills the plot — there is real setback now
+    assert (fx1 - fx0) * (fy1 - fy0) < layout.plot.width_m * layout.plot.depth_m - geom.EPS
 
 
 _golden = _load_golden()

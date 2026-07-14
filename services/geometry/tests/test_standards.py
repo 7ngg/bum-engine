@@ -27,11 +27,13 @@ def test_standards_are_positive_and_internally_consistent():
         assert spec.max_aspect >= 1.0, name
 
 
-def test_neufert_warnings_fire_on_todays_output(program):
-    # gW_eN seed=1 workers=1: deterministic within this environment. The
-    # violating rooms below come from the entry/children zones, which are
-    # stable across the (documented, pre-existing, environment-dependent)
-    # tie-break variance in the living/dining/master_suite cluster.
+def test_neufert_warnings_after_zone_minima(program):
+    # After Task 2's footprint + zone-minima work, four of the five original
+    # composite-slice violations are gone: Master Bathroom and Walk-in Closet
+    # (master_suite now >= 5.0 m wide), and Foyer and Mudroom (entry aspect no
+    # longer forced slender). What SURVIVES is the children Bathroom, whose
+    # depth is pinned at 2.0 m by slicer.py's 0.24 cut fraction independent of
+    # zone size — a Task 3 finding, not a Task 2 failure.
     r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
     layout = build_layout(r, program)
     v = validate(layout, program)
@@ -44,6 +46,11 @@ def test_neufert_warnings_fire_on_todays_output(program):
             if f"room {name!r}" in w:
                 violating_rooms.add(name)
 
-    assert {"Bathroom", "Mudroom", "Foyer"} <= violating_rooms, (
-        f"expected today's known slivers among the warnings, got: {v.warnings}"
+    # the Task 2 win: these composite slivers are now legal
+    assert {"Master Bathroom", "Walk-in Closet", "Mudroom", "Foyer"}.isdisjoint(violating_rooms), (
+        f"expected the master/entry slivers fixed, got: {v.warnings}"
     )
+    # the surviving slicer-fraction defect (Task 3)
+    assert "Bathroom" in violating_rooms, f"expected children Bathroom to survive, got: {v.warnings}"
+    # strictly fewer than the original five
+    assert len(violating_rooms) < 5

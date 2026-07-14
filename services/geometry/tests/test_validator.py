@@ -47,8 +47,15 @@ def test_master_kitchen_adjacency_rejected(program):
 
 
 def test_low_coverage_rejected(layout, program):
+    # Coverage is now measured against the footprint (room bounding box), so
+    # "low coverage" means a big unassigned void INSIDE that box: two small
+    # rooms at opposite corners give a large bbox that is mostly empty.
     bad = layout.model_copy(deep=True)
-    bad.rooms = bad.rooms[:1]  # drop almost all area
+    r0 = bad.rooms[0].model_copy(deep=True)
+    r0.rect_m = [0.0, 0.0, 2.0, 2.0]
+    r1 = bad.rooms[1].model_copy(deep=True)
+    r1.rect_m = [10.0, 10.0, 12.0, 12.0]
+    bad.rooms = [r0, r1]
     v = validate(bad, program)
     assert not v.ok
     assert any("coverage" in e for e in v.errors)

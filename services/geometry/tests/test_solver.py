@@ -45,17 +45,20 @@ def test_required_adjacencies_share_wall(program, preset):
 
 @pytest.mark.parametrize("preset", PRESETS)
 def test_hard_zoning(program, preset):
+    # Pins now anchor to the FOOTPRINT edges, not the plot edges (the house
+    # sits inside the plot with setback around it).
     spec = resolve(preset)
     r = solve(program, preset, seed=1, time_limit_s=12)
     rects = {z.zone: tuple(z.rect_m) for z in r.rects}
-    assert rects["living"][1] == 0.0  # living on south edge
-    assert rects["master_suite"][1] == 0.0
-    assert rects["master_suite"][3] <= 0.62 * program.plot.depth_m + 1e-6
-    # garage side per preset
+    fx0, fy0, fx1, fy1 = r.footprint_m
+    assert abs(rects["living"][1] - fy0) < 1e-6  # living on footprint's south edge
+    assert abs(rects["master_suite"][1] - fy0) < 1e-6
+    assert rects["master_suite"][3] <= fy0 + 0.62 * (fy1 - fy0) + 1e-6
+    # garage on the preset's side of the footprint
     if spec.garage_side == "W":
-        assert rects["garage"][0] == 0.0
+        assert abs(rects["garage"][0] - fx0) < 1e-6
     else:
-        assert rects["garage"][2] == program.plot.width_m
+        assert abs(rects["garage"][2] - fx1) < 1e-6
 
 
 @pytest.mark.parametrize("preset", PRESETS)
