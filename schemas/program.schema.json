@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["version", "plot", "orientation", "target_area_m2", "floors", "spaces", "adjacency"],
   "properties": {
-    "version": { "type": "string", "const": "1.0.0" },
+    "version": { "type": "string", "enum": ["1.0.0", "1.1.0"] },
     "plot": {
       "type": "object",
       "additionalProperties": false,
@@ -40,8 +40,8 @@
   },
   "$defs": {
     "zoneId": {
-      "description": "Canonical macro-zone identity the solver understands.",
-      "enum": ["living", "dining", "kitchen_laundry", "master_suite", "children", "office", "entry", "garage"]
+      "description": "Canonical macro-zone identity the solver understands. 'circulation' is 1.1.0, currently inert (no preset places it).",
+      "enum": ["living", "dining", "kitchen_laundry", "master_suite", "children", "office", "entry", "garage", "circulation"]
     },
     "category": {
       "enum": ["living", "private", "wet", "service", "circ", "office", "outdoor"]
@@ -56,7 +56,15 @@
         "min_w_m": { "type": "number", "exclusiveMinimum": 0 },
         "min_h_m": { "type": "number", "exclusiveMinimum": 0 },
         "category": { "$ref": "#/$defs/category" },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "max_aspect": {
+          "anyOf": [{ "type": "null" }, { "type": "number", "exclusiveMinimum": 0 }],
+          "description": "1.1.0, optional per-zone override. Not yet read by the solver."
+        },
+        "min_area_m2": {
+          "anyOf": [{ "type": "null" }, { "type": "number", "exclusiveMinimum": 0 }],
+          "description": "1.1.0, optional per-zone override. Not yet read by the solver."
+        }
       }
     },
     "pairList": {

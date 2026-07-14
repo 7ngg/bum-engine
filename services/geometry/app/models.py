@@ -11,7 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+SUPPORTED_VERSIONS = ("1.0.0", "1.1.0")
 
 ZoneId = Literal[
     "living",
@@ -22,6 +23,9 @@ ZoneId = Literal[
     "office",
     "entry",
     "garage",
+    # 1.1.0, inert: no preset places it, gemini.py never emits it, no
+    # program uses it yet. Exists so a corridor is expressible at all.
+    "circulation",
 ]
 
 Category = Literal["living", "private", "wet", "service", "circ", "office", "outdoor"]
@@ -44,6 +48,11 @@ class Space(BaseModel):
     min_h_m: float = Field(gt=0)
     category: Category
     tags: list[str] = Field(default_factory=list)
+    # 1.1.0, optional, not on the wire for existing documents. Per-zone
+    # override of the standards.py table; solver/slicer enforcement lands
+    # in a later task, so these are currently unread.
+    max_aspect: float | None = Field(default=None, gt=0)
+    min_area_m2: float | None = Field(default=None, gt=0)
 
 
 class Adjacency(BaseModel):
@@ -53,7 +62,7 @@ class Adjacency(BaseModel):
 
 
 class Program(BaseModel):
-    version: Literal["1.0.0"] = SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0"] = SCHEMA_VERSION
     plot: Plot
     orientation: Orientation
     target_area_m2: float = Field(gt=0)
@@ -117,7 +126,7 @@ class Terrace(BaseModel):
 
 
 class Layout(BaseModel):
-    version: Literal["1.0.0"] = SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0"] = SCHEMA_VERSION
     preset: str
     seed: int
     objective: float

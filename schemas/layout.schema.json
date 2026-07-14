@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["version", "preset", "seed", "objective", "levels", "wall_height_m", "plot", "orientation", "rooms", "walls", "doors", "windows", "entry"],
   "properties": {
-    "version": { "type": "string", "const": "1.0.0" },
+    "version": { "type": "string", "enum": ["1.0.0", "1.1.0"] },
     "preset": { "type": "string", "description": "e.g. gW_eN (garage West, entry North)" },
     "seed": { "type": "integer" },
     "objective": { "type": "number", "description": "Solver objective value; higher is better." },

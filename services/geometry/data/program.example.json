@@ -15,8 +15,8 @@
     { "id": "entry",           "target_m2": 12.0, "min_w_m": 3.0, "min_h_m": 3.0, "category": "circ",    "tags": ["composite"] }
   ],
   "adjacency": {
-    "desirable": [["kitchen_laundry", "dining"], ["dining", "living"], ["entry", "living"], ["children", "living"]],
-    "semi": [["entry", "office"], ["garage", "entry"], ["kitchen_laundry", "entry"]],
+    "desirable": [["entry", "living"], ["entry", "office"], ["entry", "children"], ["garage", "entry"], ["kitchen_laundry", "entry"], ["children", "living"]],
+    "semi": [],
     "avoid": [["master_suite", "kitchen_laundry"], ["garage", "living"]]
   }
 }

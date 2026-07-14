@@ -12,7 +12,7 @@ returned in metres.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ortools.sat.python import cp_model
 
@@ -58,6 +58,7 @@ class SolveResult:
     plot_w_m: float
     plot_d_m: float
     wall_time_s: float
+    warnings: list[str] = field(default_factory=list)
 
 
 class _ZoneVars:
@@ -158,12 +159,61 @@ def _forbid_adjacent(
     m.AddBoolOr(sels)
 
 
+_REQUIRED_PAIRS: set[frozenset] = {frozenset(p) for p in Z.REQUIRED_ADJ}
+
+
+def _is_required_pair(a: ZoneId, b: ZoneId) -> bool:
+    """True if (a, b) is already a hard-required adjacency (zones.REQUIRED_ADJ).
+
+    Used to skip re-rewarding as soft something the model already guarantees —
+    otherwise a Program that lists an already-required pair under desirable/semi
+    would silently inflate the objective by a constant for every feasible
+    solution, without changing which layout gets chosen.
+    """
+    return frozenset((a, b)) in _REQUIRED_PAIRS
+
+
 def solve(
     program: Program,
     preset: str,
     seed: int = 0,
     time_limit_s: float = 12.0,
     workers: int = 8,
+) -> SolveResult:
+    """Solve, retrying once if a caller-supplied `avoid` edge makes it infeasible.
+
+    Program.adjacency is the live source for soft desirable/semi rewards and
+    the hard avoid gap; REQUIRED_ADJ stays hard and non-LLM-controllable
+    regardless (see zones.py). Empty lists on Program.adjacency fall back to
+    zones.DEFAULT_*, reproducing prior (pre-adjacency-wiring) behaviour
+    exactly. A hallucinated `avoid` pair must degrade gracefully, never
+    hard-fail the request: if the first attempt is infeasible and the caller
+    actually supplied `avoid` edges (as opposed to us defaulting them), retry
+    once with those edges dropped and warn.
+    """
+    llm_avoid = program.adjacency.avoid
+    desirable = program.adjacency.desirable or Z.DEFAULT_DESIRABLE
+    semi = program.adjacency.semi or Z.DEFAULT_SEMI
+    avoid = llm_avoid or Z.DEFAULT_AVOID
+
+    result = _solve_once(program, preset, seed, time_limit_s, workers, avoid, desirable, semi)
+    if not result.feasible and llm_avoid:
+        result = _solve_once(program, preset, seed, time_limit_s, workers, [], desirable, semi)
+        result.warnings.append(
+            f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
+        )
+    return result
+
+
+def _solve_once(
+    program: Program,
+    preset: str,
+    seed: int,
+    time_limit_s: float,
+    workers: int,
+    avoid_pairs: list,
+    desirable_pairs: list,
+    semi_pairs: list,
 ) -> SolveResult:
     spec = resolve(preset)
     W = _u(program.plot.width_m)
@@ -199,33 +249,49 @@ def solve(
     share_min = _ceil_u(Z.REQUIRED_SHARE_M)
     gap_u = _ceil_u(Z.FORBIDDEN_GAP_M)
 
-    # required adjacency (hard)
+    # required adjacency (hard, always-on — see zones.REQUIRED_ADJ docstring)
     for a, b in Z.REQUIRED_ADJ:
         if a in zv and b in zv:
             sh = _share_wall(m, zv[a], zv[b], share_min, f"req_{a}_{b}")
             m.Add(sh == 1)
 
-    # forbidden adjacency (hard)
-    for a, b in Z.FORBIDDEN_ADJ:
+    # forbidden adjacency (hard). Program-controlled: program.adjacency.avoid,
+    # defaulting to zones.DEFAULT_AVOID when the caller left it empty.
+    for pair in avoid_pairs:
+        a, b = pair[0], pair[1]
         if a in zv and b in zv:
             _forbid_adjacent(m, zv[a], zv[b], gap_u, f"fbd_{a}_{b}")
 
     # soft adjacency (reward). Any shared wall >= one grid cell counts.
-    soft_bools = []
-    for a, b in Z.SOFT_ADJ:
-        if a in zv and b in zv:
-            soft_bools.append(_share_wall(m, zv[a], zv[b], 1, f"soft_{a}_{b}"))
+    # desirable/semi are program.adjacency.{desirable,semi}, defaulting to
+    # zones.DEFAULT_{DESIRABLE,SEMI}. Pairs already hard-required are skipped
+    # here — they're guaranteed already, so rewarding them again would just
+    # inflate the objective by a constant without changing the chosen layout.
+    desirable_bools = []
+    for pair in desirable_pairs:
+        a, b = pair[0], pair[1]
+        if a in zv and b in zv and not _is_required_pair(a, b):
+            desirable_bools.append(_share_wall(m, zv[a], zv[b], 1, f"des_{a}_{b}"))
+
+    semi_bools = []
+    for pair in semi_pairs:
+        a, b = pair[0], pair[1]
+        if a in zv and b in zv and not _is_required_pair(a, b):
+            semi_bools.append(_share_wall(m, zv[a], zv[b], 1, f"semi_{a}_{b}"))
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
-    # human objective = 12*coverage_pct + 40*soft_met - 3*public_non_south
-    #                 + 2*service_northness ; coverage_pct = 100*area/plot.
+    # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met
+    #                 - 3*public_non_south + 2*service_northness ;
+    #                 coverage_pct = 100*area/plot.
     total_area = m.NewIntVar(0, plot_cells, "total_area")
     m.Add(total_area == sum(v.area for v in zv.values()))
 
     obj_terms: list[cp_model.LinearExpr] = [12 * 100 * total_area]
 
-    if soft_bools:
-        obj_terms.append(plot_cells * 40 * sum(soft_bools))
+    if desirable_bools:
+        obj_terms.append(plot_cells * 40 * sum(desirable_bools))
+    if semi_bools:
+        obj_terms.append(plot_cells * 15 * sum(semi_bools))
 
     # public rooms penalised when not on the south edge (y0 > 0)
     for zid in present:

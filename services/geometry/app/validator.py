@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import geom
+from . import geom, standards
 from .models import Layout, Program
 
 MIN_ROOM_M = 0.9
@@ -100,7 +100,34 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
     _require_adjacent(layout, "Dining", "Living", warnings)
     _require_adjacent(layout, "Master Bedroom", "Master Bathroom", warnings)
 
+    # 8. Neufert dimensional standards — instrumentation only (Task 1). Today's
+    # slicer still cuts slivers well below these minimums (MIN_ROOM_M=0.9 is
+    # the only room-level gate); warning rather than rejecting lets us measure
+    # the defect before Task 2 fixes the slicer/solver and Task 3 tightens
+    # this to a hard reject.
+    _check_neufert_standards(layout, warnings)
+
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings, coverage=coverage)
+
+
+def _check_neufert_standards(layout: Layout, warnings: list[str]) -> None:
+    for rm in layout.rooms:
+        spec = standards.ROOMS.get(rm.name)
+        if spec is None:
+            continue
+        x0, y0, x1, y1 = rm.rect_m
+        w, h = x1 - x0, y1 - y0
+        area = w * h
+        if w < spec.min_w_m - geom.EPS:
+            warnings.append(f"room {rm.name!r} width {w:.2f} m below Neufert min {spec.min_w_m} m")
+        if h < spec.min_h_m - geom.EPS:
+            warnings.append(f"room {rm.name!r} depth {h:.2f} m below Neufert min {spec.min_h_m} m")
+        if area < spec.min_area_m2 - geom.EPS:
+            warnings.append(f"room {rm.name!r} area {area:.2f} m2 below Neufert min {spec.min_area_m2} m2")
+        short_side = min(w, h)
+        aspect = max(w, h) / short_side if short_side > geom.EPS else float("inf")
+        if aspect > spec.max_aspect + geom.EPS:
+            warnings.append(f"room {rm.name!r} aspect {aspect:.2f} exceeds Neufert max {spec.max_aspect}")
 
 
 def _check_forbidden(
