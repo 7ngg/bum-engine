@@ -108,16 +108,19 @@ class Program(BaseModel):
 
     @model_validator(mode="after")
     def _warn_footprint_reconciliation(self) -> "Program":
-        # Gemini fills footprint_target_m2 and the per-space targets
-        # independently; nothing else reconciles them. Warn (not error) on a
-        # gross mismatch so the footprint band isn't silently un-tileable.
+        # Gemini fills footprint_target_m2 and the per-space targets independently
+        # and nothing in the brief reconciles them. This is now HANDLED, not fatal:
+        # reconcile.reconcile_program rescales the habitable targets to the
+        # footprint budget before solving. Warn (informationally) on any real
+        # mismatch — 8% catches the example's 176-vs-160 (10%), which slipped
+        # under the old 15% bar — so the rescale isn't silent.
         total = sum(s.target_m2 for s in self.spaces)
         ft = self.footprint_target_m2
-        if ft > 0 and abs(total - ft) > 0.15 * ft:
+        if ft > 0 and abs(total - ft) > 0.08 * ft:
             warnings.warn(
-                f"space targets sum to {total:.0f} m2 but footprint_target_m2 is "
-                f"{ft:.0f} m2 ({abs(total - ft) / ft * 100:.0f}% off); the footprint "
-                f"band may not tile cleanly",
+                f"space targets sum to {total:.0f} m2 vs footprint_target_m2 "
+                f"{ft:.0f} m2 ({abs(total - ft) / ft * 100:.0f}% off); "
+                f"reconcile_program will rescale the habitable targets to {ft:.0f}",
                 stacklevel=2,
             )
         return self

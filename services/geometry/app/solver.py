@@ -18,6 +18,7 @@ from ortools.sat.python import cp_model
 
 from .models import Program, ZoneId
 from .presets import Pins, resolve
+from . import reconcile
 from . import standards
 from . import zones as Z
 
@@ -283,12 +284,18 @@ def solve(
     actually supplied `avoid` edges (as opposed to us defaulting them), retry
     once with those edges dropped and warn.
     """
+    # Reconcile the brief to the footprint budget BEFORE solving (Task 4): the
+    # space targets are rescaled to sum to footprint_target_m2 (garage held), so
+    # the solver's area windows and the new target-adherence term are measured
+    # against a self-consistent program.
+    program, recon_warnings = reconcile.reconcile_program(program)
+
     llm_avoid = program.adjacency.avoid
     desirable = program.adjacency.desirable or Z.DEFAULT_DESIRABLE
     semi = program.adjacency.semi or Z.DEFAULT_SEMI
     avoid = llm_avoid or Z.DEFAULT_AVOID
 
-    area_warnings = check_program_area(program)
+    area_warnings = check_program_area(program)  # now measured on the reconciled program
 
     result = _solve_once(program, preset, seed, time_limit_s, workers, avoid, desirable, semi)
     if not result.feasible and llm_avoid:
@@ -296,7 +303,7 @@ def solve(
         result.warnings.append(
             f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
         )
-    result.warnings = area_warnings + result.warnings
+    result.warnings = recon_warnings + area_warnings + result.warnings
     return result
 
 
@@ -330,27 +337,27 @@ def _solve_once(
     present: list[ZoneId] = [z for z in Z.ZONE_ORDER if program.space(z) is not None]
     zv: dict[ZoneId, _ZoneVars] = {}
     ns_vars: dict[ZoneId, cp_model.IntVar] = {}  # kitchen_laundry cut-axis bit
+    # per-zone info the objective consumes: (zid, v, target_cells, min_w, min_h,
+    # brief_w_pref, brief_h_pref) — all dims in grid units.
+    zinfo: list[tuple] = []
     for zid in present:
         sp = program.space(zid)
         assert sp is not None
         target_cells = sp.target_m2 / (GRID_M * GRID_M)
+        target_cells_i = int(round(target_cells))
         lo_area = int(math.floor(AREA_LO * target_cells))
         hi_area = min(plot_cells, int(math.ceil(AREA_HI * target_cells)))
+        # The brief's per-space minima are now SOFT preferences (Task 4b), not
+        # hard filters; the HARD floor is the Neufert-legal shape. Keep the brief
+        # value for the soft objective term below.
+        pref_w = max(1, _ceil_u(sp.min_w_m))
+        pref_h = max(1, _ceil_u(sp.min_h_m))
 
         lp = slicer.legal_pairs(zid)
         if lp:
-            # Respect the brief's DECLARED minima on top of the standards-legal
-            # table: the union table may include shapes narrower than the program
-            # asked for (e.g. a 2.5 m kitchen on the N/S cut vs a declared 4.0 m).
-            dw = max(1, _ceil_u(sp.min_w_m))
-            dh = max(1, _ceil_u(sp.min_h_m))
-            lp = [t for t in lp if t[0] >= dw and t[1] >= dh]
-        if lp:
-            # COMPOSITE: pin (w, h) to the EXACT set of shapes whose slice is
-            # standards-legal (Phase 3 table) — not a min_w/min_h box, which over
-            # a staircase region admits illegal shapes. Shape legality replaces
-            # the per-zone aspect bound. kitchen_laundry's table is axis-tagged
-            # (w, h, ns); ns is tied to the Dining side below.
+            # COMPOSITE: pin (w, h) to the standards-legal table (Phase 3). No
+            # brief-min filter — a brief min above Neufert is a preference now, so
+            # the union's tighter shapes (e.g. the 2.5 m N/S kitchen) stay legal.
             min_w = max(1, min(t[0] for t in lp))
             min_h = max(1, min(t[1] for t in lp))
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
@@ -363,16 +370,15 @@ def _solve_once(
             else:
                 m.AddAllowedAssignments([v.w, v.h], lp)
         else:
-            # NON-COMPOSITE: declared Space minima widened by the room standard,
-            # plus the aspect bound.
+            # NON-COMPOSITE: HARD floor is the Neufert room standard; the brief
+            # minimum (if larger) is a soft preference below, not a hard widening.
             zm = standards.zone_minima(zid)
-            min_w_m, min_h_m = sp.min_w_m, sp.min_h_m
-            aspect = sp.max_aspect if sp.max_aspect is not None else DEFAULT_MAX_ASPECT
             if zm is not None:
-                min_w_m = max(min_w_m, zm.min_w_m)
-                min_h_m = max(min_h_m, zm.min_h_m)
-                if sp.max_aspect is None:
-                    aspect = zm.max_aspect
+                min_w_m, min_h_m = zm.min_w_m, zm.min_h_m
+                aspect = sp.max_aspect if sp.max_aspect is not None else zm.max_aspect
+            else:
+                min_w_m, min_h_m = sp.min_w_m, sp.min_h_m
+                aspect = sp.max_aspect if sp.max_aspect is not None else DEFAULT_MAX_ASPECT
             min_w = max(1, _ceil_u(min_w_m))
             min_h = max(1, _ceil_u(min_h_m))
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
@@ -390,6 +396,7 @@ def _solve_once(
         # hard zoning pins (to footprint edges)
         _apply_pins(m, v, spec.pins.get(zid, Pins()), fp)
         zv[zid] = v
+        zinfo.append((zid, v, target_cells_i, min_w, min_h, pref_w, pref_h))
 
     # non-overlap over all zones
     m.AddNoOverlap2D([v.xi for v in zv.values()], [v.yi for v in zv.values()])
@@ -492,6 +499,41 @@ def _solve_once(
         is_service = zid in Z.SERVICE_ZONES or (sp is not None and sp.category == "service")
         if is_service:
             obj_terms.append(plot_cells * 2 * (zv[zid].y0 - fp.y0))
+
+    # target-adherence (Task 4): hold each zone near its RECONCILED target area,
+    # L1 = |achieved - target|. Task 3 showed area sloshing 30% inside the
+    # [0.85,1.20] band for free (dining 1.18x tight / 0.86x roomy on ONE program),
+    # which makes ranking meaningless. ADHERE per deviation-cell is set ABOVE the
+    # coverage-fill reward (1200/cell) and the service-northness reward — the two
+    # terms that inflate zones to the band ceiling for nothing — so area stops
+    # sloshing; but it stays BELOW the soft-adjacency reward (40*plot_cells/bool)
+    # so a genuinely better-connected plan can still spend a few m2 off-target.
+    # It must DECISIVELY beat coverage (not just edge it): coverage rewards
+    # total_area globally (1200/cell), so a thin margin leaves zones parked just
+    # above target — measured: dining only reaches its reconciled target at
+    # ADHERE >= 6000. Kept below the soft-adjacency reward (40*plot_cells/bool ~=
+    # 30k) so a desirable can still pull a zone ~1 m2 off target when it pays.
+    ADHERE = 6000
+    for zid, v, tcells, *_ in zinfo:
+        dev = m.NewIntVar(0, plot_cells, f"{zid}_adh")
+        m.Add(dev >= v.area - tcells)
+        m.Add(dev >= tcells - v.area)
+        obj_terms.append(-ADHERE * dev)
+
+    # soft brief-minima (Task 4b): a brief min ABOVE the Neufert floor is a weak
+    # preference, not a veto. Penalise only the shortfall below it, and weakly, so
+    # a tighter Neufert-legal shape that packs better (the 2.5 m N/S kitchen vs
+    # the LLM's 4.0 m guess) is still chosen when the packing/adherence gain pays.
+    SOFT_MIN = 60
+    for zid, v, tcells, min_w, min_h, pref_w, pref_h in zinfo:
+        if pref_w > min_w:
+            sw = m.NewIntVar(0, W, f"{zid}_sw")
+            m.Add(sw >= pref_w - v.w)
+            obj_terms.append(-SOFT_MIN * sw)
+        if pref_h > min_h:
+            sh = m.NewIntVar(0, H, f"{zid}_sh")
+            m.Add(sh >= pref_h - v.h)
+            obj_terms.append(-SOFT_MIN * sh)
 
     m.Maximize(sum(obj_terms))
 

@@ -9,9 +9,10 @@ completion, so it uses a full budget.
 
 import pytest
 
-from app import geom
+from app import geom, standards
 from app.presets import PRESETS, resolve
-from app.solver import solve
+from app.slicer import legal_pairs
+from app.solver import GRID_M, solve
 
 
 @pytest.mark.parametrize("preset", PRESETS)
@@ -69,12 +70,24 @@ def test_hard_zoning(program, preset, solve_time_s):
 
 
 @pytest.mark.parametrize("preset", PRESETS)
-def test_min_dimensions(program, preset, solve_time_s):
+def test_min_dimensions_meet_neufert_floor(program, preset, solve_time_s):
+    # Task 4b: the brief's declared min is a SOFT preference now — the HARD floor
+    # is the Neufert-legal shape (the legal-shape table for a composite zone, the
+    # room standard for a simple one). So a composite may come out narrower than
+    # the brief asked (a 2.5 m N/S kitchen vs a 4.0 m guess) but never sub-Neufert.
     r = solve(program, preset, seed=1, time_limit_s=solve_time_s)
     for z in r.rects:
-        sp = program.space(z.zone)
-        assert (z.x1 - z.x0) >= sp.min_w_m - 1e-6
-        assert (z.y1 - z.y0) >= sp.min_h_m - 1e-6
+        lp = legal_pairs(z.zone)
+        if lp:  # composite: (w, h) must be one of the Neufert-legal table shapes
+            wu = round((z.x1 - z.x0) / GRID_M)
+            hu = round((z.y1 - z.y0) / GRID_M)
+            assert any(t[0] == wu and t[1] == hu for t in lp), (z.zone, wu, hu)
+        else:  # simple: at least the Neufert room-standard minimum
+            zm = standards.zone_minima(z.zone)
+            fw = zm.min_w_m if zm else program.space(z.zone).min_w_m
+            fh = zm.min_h_m if zm else program.space(z.zone).min_h_m
+            assert (z.x1 - z.x0) >= fw - 1e-6, z.zone
+            assert (z.y1 - z.y0) >= fh - 1e-6, z.zone
 
 
 def test_seed_is_deterministic(program):

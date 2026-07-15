@@ -26,7 +26,7 @@ from app.solver import solve
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 
-EXPECTED_OBJECTIVE = 1093.25
+EXPECTED_OBJECTIVE = 841.765625
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
