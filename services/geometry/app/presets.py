@@ -41,9 +41,16 @@ def resolve(name: str) -> PresetSpec:
     entry_side = "N" if "eN" in name else "W"
 
     pins: dict[ZoneId, Pins] = {
-        # Public + master anchored to the south (daylight/garden) edge.
+        # Public anchored to the south (daylight/garden) edge.
         "living": Pins(south=True),
-        "master_suite": Pins(south=True, max_y1_frac=0.62),
+        # Master stays in the SOUTH HALF (max_y1_frac) but is no longer glued to
+        # the garden EDGE (Task 5): a hard south pin plus the corridor fronting the
+        # children Bathroom band made it geometrically impossible for the corridor
+        # to also reach the master's south bedroom, so the suite could only be
+        # entered through the living room (a SNiP privacy violation). Trading the
+        # garden-edge for a corridor wall lets the private suite open off
+        # circulation. See solver._force_vertical_overlap.
+        "master_suite": Pins(max_y1_frac=0.62),
         # Garage on the street (north) edge and one side.
         "garage": Pins(north=True, west=(garage_side == "W"), east=(garage_side == "E")),
         # Children on the wall opposite the garage.

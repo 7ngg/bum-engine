@@ -36,12 +36,15 @@ def test_v1_0_0_document_without_new_fields_at_all_is_fine():
     assert prog.spaces[0].max_aspect is None
 
 
-def test_circulation_zone_id_accepted_but_inert():
-    # 1.1.0: "circulation" is a valid ZoneId, but ZONE_ORDER doesn't include it
-    # yet, so the solver simply never looks at a space with this id.
+def test_circulation_zone_id_accepted_and_live():
+    # Task 5: "circulation" is now a LIVE solver zone. It is not in the brief —
+    # solver.solve injects a derived corridor Space (zones.inject_circulation) —
+    # but ZONE_ORDER includes it so the solver places it, and an explicit
+    # circulation space in a document still validates and is left untouched.
     from app import zones as Z
 
-    assert "circulation" not in Z.ZONE_ORDER
+    assert "circulation" in Z.ZONE_ORDER
+    assert Z.ZONE_DISPLAY["circulation"] == "Corridor"
     data = {
         "version": "1.1.0",
         "plot": {"width_m": 10.0, "depth_m": 10.0},
@@ -57,3 +60,7 @@ def test_circulation_zone_id_accepted_but_inert():
     assert validate_program(data) == []
     prog = Program.model_validate(data)
     assert prog.space("circulation") is not None
+    # inject_circulation is a no-op when the program already carries one
+    injected, warns = Z.inject_circulation(prog)
+    assert warns == []
+    assert sum(1 for s in injected.spaces if s.id == "circulation") == 1
