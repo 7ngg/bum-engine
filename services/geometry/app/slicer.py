@@ -240,6 +240,8 @@ _SIMPLE_NAME: dict[str, tuple[str, Category]] = {
     "dining": ("Dining", "living"),
     "office": ("Office", "office"),
     "garage": ("Garage", "service"),
+    # circulation (Task 5): the corridor is one Room, never cut.
+    "circulation": ("Corridor", "circ"),
 }
 
 
@@ -307,7 +309,13 @@ _COMPOSITE = {"master_suite", "children", "kitchen_laundry", "entry"}
 _AXIAL = {"kitchen_laundry"}
 
 # non-composite zone -> its single room standard (envelope = that room).
-_ZONE_ROOM = {"living": "Living", "dining": "Dining", "office": "Office", "garage": "Garage"}
+_ZONE_ROOM = {
+    "living": "Living",
+    "dining": "Dining",
+    "office": "Office",
+    "garage": "Garage",
+    "circulation": "Corridor",
+}
 
 _PAIRS_CACHE: dict[str, object] = {}
 _MINIMA_CACHE: dict[str, object] = {}
@@ -528,37 +536,42 @@ def _door_on(rec: _WallRec, rooms: list[FinalRoom], frm: str, to: str) -> Door:
 def _build_doors(
     rooms: list[FinalRoom], recs: list[_WallRec]
 ) -> tuple[list[Door], Door, list[str]]:
-    n = len(rooms)
-    warnings: list[str] = []
-    # adjacency graph over rooms sharing a wall >= MIN_DOOR_WALL
-    adj: dict[int, list[int]] = {i: [] for i in range(n)}
-    for r in recs:
-        if -1 not in (r.a, r.b) and r.edge.length >= MIN_DOOR_WALL - geom.EPS:
-            adj[r.a].append(r.b)
-            adj[r.b].append(r.a)
+    """Doors ARE the access graph (Task 5 Phase 3). This does NOT recompute a
+    tree — it consumes validator.access_tree (the single source of truth) and
+    hosts one Door per edge on `_interior_wall_between` (a wall between two real
+    rooms, so an interior door can NEVER land on an exterior wall). The single
+    front door (entry->OUTSIDE) and the terrace door are the only openings on
+    exterior walls, added separately.
 
-    # root at Foyer, else Living, else 0
-    root = next((i for i, rm in enumerate(rooms) if rm.name == "Foyer"), None)
-    if root is None:
-        root = next((i for i, rm in enumerate(rooms) if rm.name == "Living"), 0)
+    access_tree obeys the rules validate_plan gates on — a no_through_traffic room
+    is a LEAF (never a corridor), an ensuite room is entered only from its parent
+    — so the access path never transits a bedroom. That is the root-cause fix for
+    the children hall-Bathroom bug: the middle Bathroom, placed against the
+    corridor by the solver, is reached directly; the beds get their own doors to
+    circulation, never routing the Bathroom behind a bedroom.
+    """
+    from .validator import access_tree  # lazy: the shared access-tree authority
+
+    warnings: list[str] = []
+    # The doors ARE the access tree's edges — not a second tree recomputed here.
+    # validator.access_tree is the single source of truth (root, leaf/ensuite
+    # rules, adjacency); we only turn each of its edges into a hosted Door on the
+    # interior wall between the two rooms. So a door can never exist that the
+    # access tree (which validate_plan gates on) did not produce.
+    edges, reached, _root = access_tree(rooms)
 
     doors: list[Door] = []
-    seen = {root}
-    stack = [root]
-    while stack:
-        cur = stack.pop()
-        for nb in sorted(set(adj[cur])):
-            if nb in seen:
-                continue
-            rec = _interior_wall_between(recs, cur, nb)
-            if rec is None:
-                continue
-            doors.append(_door_on(rec, rooms, rooms[cur].name, rooms[nb].name))
-            seen.add(nb)
-            stack.append(nb)
+    for i, j in edges:
+        rec = _interior_wall_between(recs, i, j)
+        if rec is None:
+            warnings.append(
+                f"access edge {rooms[i].name!r}<->{rooms[j].name!r} has no interior wall"
+            )
+            continue
+        doors.append(_door_on(rec, rooms, rooms[i].name, rooms[j].name))
 
     for i, rm in enumerate(rooms):
-        if i not in seen:
+        if i not in reached:
             warnings.append(f"room {rm.name!r} not reachable by a door (isolated)")
 
     # main entry: exterior wall of Foyer (prefer north/street), else Mudroom/Living

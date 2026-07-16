@@ -1,6 +1,6 @@
 {
   "version": "1.2.0",
-  "plot": { "width_m": 20.0, "depth_m": 15.0 },
+  "plot": { "width_m": 20.0, "depth_m": 24.0 },
   "orientation": "N",
   "footprint_target_m2": 160.0,
   "floors": 1,

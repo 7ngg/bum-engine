@@ -16,10 +16,11 @@ from pydantic import AliasChoices, BaseModel, Field, model_validator
 # revit/RevitBuilder/LayoutModel.cs, both unchanged this task, so it stays 1.1.0.
 SCHEMA_VERSION = "1.1.0"
 # program.json forked to 1.2.0 for the target_area_m2 -> footprint_target_m2
-# rename (additive; 1.0.0/1.1.0 still load). The layout contract did not change,
-# so the two versions are no longer in lockstep.
-PROGRAM_SCHEMA_VERSION = "1.2.0"
-SUPPORTED_VERSIONS = ("1.0.0", "1.1.0", "1.2.0")
+# rename, then to 1.3.0 for the optional `site` block (setbacks + coverage cap).
+# Both are additive: 1.0.0/1.1.0/1.2.0 documents still load (site defaults). The
+# layout contract did not change, so the versions are no longer in lockstep.
+PROGRAM_SCHEMA_VERSION = "1.3.0"
+SUPPORTED_VERSIONS = ("1.0.0", "1.1.0", "1.2.0", "1.3.0")
 
 ZoneId = Literal[
     "living",
@@ -68,8 +69,24 @@ class Adjacency(BaseModel):
     avoid: list[list[ZoneId]] = Field(default_factory=list)
 
 
+class Site(BaseModel):
+    """Municipal siting rules (1.3.0, optional; DEFAULTED and overridable, never
+    LLM-emitted). The house footprint must sit inside the setback envelope and
+    cover at most `max_coverage_ratio` of the plot. Defaults follow common
+    residential zoning / SP 42.13330 (not SNiP 2.08). The front setback is the
+    orientation-facing (street) edge, the rear its opposite (garden); in the
+    solver's fixed internal frame that is street=north / garden=south, so the
+    mapping is currently implemented for orientation "N" only (solver raises
+    otherwise)."""
+
+    max_coverage_ratio: float = Field(default=0.5, gt=0, le=1.0)
+    setback_front_m: float = Field(default=3.0, ge=0)
+    setback_side_m: float = Field(default=2.0, ge=0)
+    setback_rear_m: float = Field(default=5.0, ge=0)
+
+
 class Program(BaseModel):
-    version: Literal["1.0.0", "1.1.0", "1.2.0"] = PROGRAM_SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0", "1.2.0", "1.3.0"] = PROGRAM_SCHEMA_VERSION
     plot: Plot
     orientation: Orientation
     # GROSS FOOTPRINT, GARAGE INCLUDED — the area the solver's footprint band
@@ -82,6 +99,9 @@ class Program(BaseModel):
     floors: int = Field(ge=1, le=4)
     spaces: list[Space] = Field(min_length=1)
     adjacency: Adjacency = Field(default_factory=Adjacency)
+    # 1.3.0, optional: setbacks + coverage cap. Absent on older documents ->
+    # defaults (0.5 cap, 3/2/5 m front/side/rear). Never LLM-emitted.
+    site: Site = Field(default_factory=Site)
 
     model_config = {"populate_by_name": True}
 

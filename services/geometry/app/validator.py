@@ -134,7 +134,164 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
     # unavoidable sliver it was under Tasks 1-2.
     _check_neufert_standards(layout, errors)
 
+    # 9. Access graph (Task 5 Phase 2): the plan must admit a legal, bedroom-free
+    # access tree from the front door — the hard gate that turns "corridor exists"
+    # into "every room is reachable and no bedroom is a passage".
+    errors.extend(validate_plan(layout, program))
+
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings, coverage=coverage)
+
+
+ACCESS_DOOR_M = 0.9  # an access-graph edge needs a shared wall a door fits in
+
+
+def _is_public(name: str, category: str) -> bool:
+    """The social zone that must not be reached through a private/bedroom wing:
+    the living/dining rooms plus the (open-plan) Kitchen. Used for the mirror of
+    the privacy rule — a public room's tree-parent must be circulation or another
+    public room (the Kitchen, being no_through, is blocked from being a real
+    passage by the transit guard, so it can be a public sibling but never route
+    another room through itself)."""
+    return category == "living" or name == "Kitchen"
+
+
+def _access_root(names: list[str]) -> int | None:
+    if not names:
+        return None
+    root = next((i for i, nm in enumerate(names) if nm == "Foyer"), None)
+    if root is None:
+        root = next((i for i, nm in enumerate(names) if nm == "Living"), 0)
+    return root
+
+
+def access_tree(rooms) -> tuple[list[tuple[int, int]], set[int], int | None]:
+    """THE access graph, realised at room level — the SINGLE source of truth for
+    both the doors (slicer._build_doors places exactly one door per edge) and this
+    module's reachability gate (validate_plan). A spanning tree rooted at the
+    entry room (Foyer, else Living), grown over real shared walls >=
+    ACCESS_DOOR_M, under a TWO-TIER parent rule so no private room is entered
+    through a habitable one:
+      - a no_through_traffic room is a LEAF: nothing is reached through it except
+        its own ensuite children (a master bath opens off the master bedroom);
+      - TIER 1 (privacy): a no_through PRIVATE room (a bedroom) may be entered
+        ONLY from a circulation room (category "circ": Corridor/Foyer). This
+        forbids Living->Master Bedroom, the SNiP violation of routing the bedroom
+        wing through the living room. A no_through WET room (the Kitchen) is NOT
+        bound by tier 1 — it opens off the dining/living in an open plan;
+      - TIER 2 (ensuite): an ensuite room (allowed_ensuite_parents) is entered
+        ONLY from a designated parent, never straight off the corridor;
+      - MIRROR (public): a public/social room (Living, Dining, Kitchen) is entered
+        ONLY from a circulation room or another public room, never through a
+        private/bedroom one. Without this, Living<-Master Bedroom would pass (the
+        living room is not no_through) — the same directional hole, mirrored.
+    Returns (edges, reached, root): `edges` are (parent_idx, child_idx) pairs, one
+    per non-root reached room; `reached` is the set of reachable indices; `root`
+    is the entry-room index. Because the doors ARE these edges, a door can never
+    exist that this tree did not produce, and the door builder and the validator
+    can never disagree. Deterministic: neighbours are visited in index order."""
+    names = [rm.name for rm in rooms]
+    cats = [rm.category for rm in rooms]
+    n = len(names)
+    if n == 0:
+        return [], set(), None
+    # accept both the slicer's FinalRoom (.rect) and the Layout's Room (.rect_m)
+    rects = [tuple(getattr(rm, "rect_m", None) or rm.rect) for rm in rooms]
+
+    def no_through(i: int) -> bool:
+        s = standards.ROOMS.get(names[i])
+        return bool(s and s.no_through_traffic)
+
+    def parents(i: int) -> tuple[str, ...]:
+        s = standards.ROOMS.get(names[i])
+        return s.allowed_ensuite_parents if s else ()
+
+    adj: dict[int, set[int]] = {i: set() for i in range(n)}
+    for i in range(n):
+        for j in range(i + 1, n):
+            if geom.adjacent(rects[i], rects[j], ACCESS_DOOR_M):
+                adj[i].add(j)
+                adj[j].add(i)
+
+    root = _access_root(names)
+    edges: list[tuple[int, int]] = []
+    reached = {root}
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        cur_blocks_transit = cur != root and no_through(cur)
+        for nb in sorted(adj[cur]):
+            if nb in reached:
+                continue
+            nb_parents = parents(nb)
+            if nb_parents:
+                if names[cur] not in nb_parents:
+                    continue  # tier 2: ensuite room only from its designated parent
+            elif no_through(nb) and cats[nb] == "private":
+                if cats[cur] != "circ":
+                    continue  # tier 1 (privacy): a bedroom only opens off circulation
+            elif _is_public(names[nb], cats[nb]):
+                if cats[cur] != "circ" and not _is_public(names[cur], cats[cur]):
+                    continue  # mirror: a public room only from circulation or another public room
+            if cur_blocks_transit and names[cur] not in nb_parents:
+                continue  # no_through room: only its ensuite children pass through
+            edges.append((cur, nb))
+            reached.add(nb)
+            stack.append(nb)
+    return edges, reached, root
+
+
+def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
+    """Hard gate: the layout must admit the access_tree with EVERY room reachable
+    from the entry — nothing stranded behind a no_through_traffic bedroom, no
+    ensuite opening onto the corridor. Because slicer._build_doors builds its
+    doors from the SAME access_tree, a clean result here also proves the placed
+    doors reach every room. A layout that fails is dropped by validate()."""
+    rooms = layout.rooms
+    if not rooms:
+        return ["plan has no rooms"]
+    edges, reached, _root = access_tree(rooms)
+    names = [rm.name for rm in rooms]
+    cats = [rm.category for rm in rooms]
+    errors: list[str] = []
+
+    unreached = sorted({names[i] for i in range(len(rooms)) if i not in reached})
+    if unreached:
+        errors.append(
+            "access graph: rooms unreachable from the entry without transiting a "
+            f"no_through_traffic room: {unreached}"
+        )
+
+    # Mirror of access_tree's tier-1 rule (the guard whose absence let Living->
+    # Master pass): assert directly on the tree that no PRIVATE no_through room is
+    # entered from a non-circulation room. access_tree already enforces this by
+    # construction, so this is belt-and-suspenders against a future regression in
+    # the traversal, and it names the offending edge instead of a vague "isolated".
+    for parent, child in edges:
+        spec = standards.ROOMS.get(names[child])
+        if (
+            spec
+            and spec.no_through_traffic
+            and cats[child] == "private"
+            and not spec.allowed_ensuite_parents
+            and cats[parent] != "circ"
+        ):
+            errors.append(
+                f"access graph: private room {names[child]!r} is entered from "
+                f"{names[parent]!r} (not circulation) - bedroom wing routed through a habitable room"
+            )
+        # Symmetric mirror: a public/social room must be entered from circulation
+        # or another public room, never through a private/no_through one. valid=True
+        # would otherwise miss Living<-Master Bedroom (Living is not no_through).
+        elif (
+            _is_public(names[child], cats[child])
+            and cats[parent] != "circ"
+            and not _is_public(names[parent], cats[parent])
+        ):
+            errors.append(
+                f"access graph: public room {names[child]!r} is entered from "
+                f"{names[parent]!r} (private/non-public) - social zone routed through a private room"
+            )
+    return errors
 
 
 def _check_neufert_standards(layout: Layout, errors: list[str]) -> None:

@@ -235,7 +235,63 @@ def _tie_cut_axis(
     return {"E": bE, "W": bW, "N": bN, "S": bS}
 
 
+def _force_vertical_overlap(
+    m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, min_overlap: int, tag: str
+) -> None:
+    """Force `corr` (corridor) adjacent to `zone` (master suite) on a vertical E/W
+    wall whose y-overlap is >= `min_overlap`. Used with min_overlap = the Master
+    Bedroom's min depth: the suite's ~2.5 m north bath/closet strip is shorter
+    than that, so an overlap this long CANNOT sit entirely in the strip — it must
+    reach the south Bedroom band, giving the BEDROOM (not just the ensuite) a
+    corridor wall so the private suite is entered from circulation, never through
+    the living room. Same family as _force_vertical_cover_center; constrains only
+    the overlap length (no y-pin) so it composes with the children center-cover."""
+    cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone
+    cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone
+    m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
+    m.Add(zone.x1 == corr.x0).OnlyEnforceIf(cE)
+    m.AddBoolOr([cW, cE])
+    y_lo = m.NewIntVar(0, 10_000, f"{tag}_ylo")
+    y_hi = m.NewIntVar(0, 10_000, f"{tag}_yhi")
+    m.AddMaxEquality(y_lo, [corr.y0, zone.y0])
+    m.AddMinEquality(y_hi, [corr.y1, zone.y1])
+    m.Add(y_hi - y_lo >= min_overlap)
+
+
+def _force_vertical_cover_center(
+    m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, band_u: int, tag: str
+) -> None:
+    """Force `corr` (corridor) to share a vertical E/W wall with `zone` (children)
+    whose overlap COVERS the zone's central `band_u`-unit slice — the middle
+    Bathroom band. children is sliced bed2 / Bathroom / bed3 top-to-bottom with
+    the Bathroom centred (and full-width), so its ONLY non-bedroom, non-exterior
+    edge is the interior vertical edge at that central band; covering it gives the
+    Bathroom a DIRECT corridor wall. The two beds (against the exterior wall,
+    sharing a full-width wall with the Bathroom) are then reached THROUGH the
+    Bathroom — legal, since the Bathroom is no_through_traffic=False — so no path
+    ever transits a bedroom. Root-cause fix for the Task-2a hall-bathroom bug.
+    A 2-unit (x2-written) margin absorbs the slice's half-grid centring drift."""
+    cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone: corr.x1 == zone.x0
+    cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone: zone.x1 == corr.x0
+    m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
+    m.Add(zone.x1 == corr.x0).OnlyEnforceIf(cE)
+    m.AddBoolOr([cW, cE])
+    m.Add(2 * corr.y0 <= zone.y0 + zone.y1 - band_u - 2)
+    m.Add(2 * corr.y1 >= zone.y0 + zone.y1 + band_u + 2)
+
+
+# Test seam (Task 5 Phase 2). Production is always True: children is connected to
+# the corridor by _force_vertical_cover_center, guaranteeing the hall Bathroom is
+# corridor-DIRECT. Set False to fall back to a plain children<->{corridor,entry}
+# disjunction — used only by test_solver to prove the guarantee is LOAD-BEARING:
+# without it the gE_eW handedness (entry-west + children-west) becomes feasible
+# but the Bathroom loses its direct corridor wall. See test_children_bathroom_*.
+_CHILD_CENTER_COVER: bool = True
+
 _REQUIRED_PAIRS: set[frozenset] = {frozenset(p) for p in Z.REQUIRED_ADJ}
+# The access graph (Task 5 Phase 2) uses only relaxed disjunctions, so no pair is
+# hard-forced and the soft-adjacency loop needs no extra skips beyond REQUIRED_ADJ.
+_ACCESS_FORCED_PAIRS: set[frozenset] = set()
 
 
 def _is_required_pair(a: ZoneId, b: ZoneId) -> bool:
@@ -284,11 +340,23 @@ def solve(
     actually supplied `avoid` edges (as opposed to us defaulting them), retry
     once with those edges dropped and warn.
     """
-    # Reconcile the brief to the footprint budget BEFORE solving (Task 4): the
-    # space targets are rescaled to sum to footprint_target_m2 (garage held), so
-    # the solver's area windows and the new target-adherence term are measured
-    # against a self-consistent program.
-    program, recon_warnings = reconcile.reconcile_program(program)
+    # Site setbacks (Task 5 Phase 4) are mapped in the fixed internal frame where
+    # street = north and garden = south, i.e. orientation "N". Rather than
+    # silently place a garden on the street for a rotated plot, refuse a non-N
+    # orientation loudly — a named TODO, not a wrong plan. (See models.Site.)
+    if program.orientation != "N":
+        raise NotImplementedError(
+            "setback orientation mapping only implemented for N-facing plots "
+            f"(got orientation {program.orientation!r}); see Task 6"
+        )
+    # Inject the derived circulation corridor as a live zone (Task 5) BEFORE
+    # reconciling, then reconcile the brief to the footprint budget: the space
+    # targets are rescaled to sum to footprint_target_m2, holding the garage AND
+    # the corridor (its target is derived, not a rescalable estimate), so the
+    # solver's area windows and the target-adherence term are measured against a
+    # self-consistent program with the hall carved out of the habitable budget.
+    program, circ_warnings = Z.inject_circulation(program)
+    program, recon_warnings = reconcile.reconcile_program(program, held=("garage", "circulation"))
 
     llm_avoid = program.adjacency.avoid
     desirable = program.adjacency.desirable or Z.DEFAULT_DESIRABLE
@@ -303,7 +371,7 @@ def solve(
         result.warnings.append(
             f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
         )
-    result.warnings = recon_warnings + area_warnings + result.warnings
+    result.warnings = circ_warnings + recon_warnings + area_warnings + result.warnings
     return result
 
 
@@ -331,6 +399,22 @@ def _solve_once(
     house_cells = program.target_area_m2 / (GRID_M * GRID_M)
     m.Add(fp.area >= int(math.floor(FOOTPRINT_LO * house_cells)))
     m.Add(fp.area <= min(plot_cells, int(math.ceil(FOOTPRINT_HI * house_cells))))
+
+    # Site setbacks + coverage cap (Task 5 Phase 4). Fixed internal frame:
+    # street = north (+y), garden = south (-y). The front setback is the street
+    # (north) edge the garage/entry pin and orientation labels; the rear is the
+    # garden (south) edge Living pins to, so the south pin finally means a real
+    # setback. Setbacks are minimum distances -> _ceil_u (round the gap UP). The
+    # coverage cap is a hard ceiling on the footprint; it is what makes an
+    # over-stuffed brief (the tight plot at ~87%) correctly infeasible, and its
+    # asymmetric front/rear + side minima also shrink the translational slack that
+    # made the roomy solve slow.
+    site = program.site
+    m.Add(fp.x0 >= _ceil_u(site.setback_side_m))
+    m.Add(fp.x1 <= W - _ceil_u(site.setback_side_m))
+    m.Add(fp.y0 >= _ceil_u(site.setback_rear_m))       # garden, south
+    m.Add(fp.y1 <= H - _ceil_u(site.setback_front_m))  # street, north
+    m.Add(fp.area <= int(math.floor(site.max_coverage_ratio * plot_cells)))
 
     from . import slicer  # lazy: slicer imports solver (GRID_M, ZoneRect)
 
@@ -360,9 +444,16 @@ def _solve_once(
             # the union's tighter shapes (e.g. the 2.5 m N/S kitchen) stay legal.
             min_w = max(1, min(t[0] for t in lp))
             min_h = max(1, min(t[1] for t in lp))
+            # AREA_HI caps sprawl relative to the target, but must never fall
+            # below the zone's smallest legal shape. When reconcile shrinks a
+            # target under its Neufert floor (Task 5: a suite carved down to pay
+            # for the corridor), 1.2*target can dip below the smallest legal pair
+            # and strangle the AllowedAssignments set to empty -> INFEASIBLE. The
+            # hard legal floor wins; the adherence term carries the over-target.
+            floor_area = min(t[0] * t[1] for t in lp)
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
             m.Add(v.area >= lo_area)
-            m.Add(v.area <= hi_area)
+            m.Add(v.area <= max(hi_area, floor_area))
             if len(lp[0]) == 3:  # axial (kitchen_laundry): (w, h, ns)
                 ns = m.NewBoolVar(f"{zid}_ns")
                 m.AddAllowedAssignments([v.w, v.h, ns], lp)
@@ -382,8 +473,20 @@ def _solve_once(
             min_w = max(1, _ceil_u(min_w_m))
             min_h = max(1, _ceil_u(min_h_m))
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
-            m.Add(v.area >= max(min_w * min_h, lo_area))
-            m.Add(v.area <= hi_area)
+            # Same floor-wins clamp as the composite branch: a Neufert floor
+            # above 1.2*target (reconciled below its minimum) must not produce an
+            # empty [>=floor, <=hi] window.
+            floor_area = min_w * min_h
+            hi = max(hi_area, floor_area)
+            if zid == "circulation":
+                # The corridor is the flex void-filler and the access spine: the
+                # Phase-2 full-span children constraint can force it tall (a 1.2 m
+                # spine covering a ~7.5 m room stack needs ~11 m2 > 1.2*target).
+                # Uncap its upper area so topology wins; the L1 adherence term
+                # still pulls it back toward the derived target when free to.
+                hi = plot_cells
+            m.Add(v.area >= max(floor_area, lo_area))
+            m.Add(v.area <= hi)
             asp_i = int(round(100 * aspect))
             m.Add(100 * v.w <= asp_i * v.h)
             m.Add(100 * v.h <= asp_i * v.w)
@@ -433,14 +536,62 @@ def _solve_once(
     desirable_bools = []
     for pair in desirable_pairs:
         a, b = pair[0], pair[1]
-        if a in zv and b in zv and not _is_required_pair(a, b):
+        if a in zv and b in zv and not _is_required_pair(a, b) and frozenset((a, b)) not in _ACCESS_FORCED_PAIRS:
             desirable_bools.append(_share_wall(m, zv[a], zv[b], 1, f"des_{a}_{b}"))
 
     semi_bools = []
     for pair in semi_pairs:
         a, b = pair[0], pair[1]
-        if a in zv and b in zv and not _is_required_pair(a, b):
+        if a in zv and b in zv and not _is_required_pair(a, b) and frozenset((a, b)) not in _ACCESS_FORCED_PAIRS:
             semi_bools.append(_share_wall(m, zv[a], zv[b], 1, f"semi_{a}_{b}"))
+
+    # --- access graph (Task 5 Phase 2): tree-first circulation ----------------
+    # Every zone shares a real >=0.9 m wall with the corridor OR with a zone
+    # already circulation-connected (AddBoolOr — a relaxed disjunction, never a
+    # rigid star or a single forced spine). Connectivity is guaranteed BY
+    # CONSTRUCTION via a mutually-constrained backbone {circulation, entry,
+    # living}: each present backbone member shares a wall with another member, so
+    # a 3-node graph in which no node can be isolated is always ONE component;
+    # every other zone then attaches to a backbone member, so the whole access
+    # graph is connected. This is what keeps it packable where the hard-forced
+    # edges were INFEASIBLE (garage<->entry on the tight plot; entry<->corridor on
+    # the entry-west presets). validator.validate_plan re-proves connectivity on
+    # the built geometry and adds the no-through-traffic + hall-Bathroom rules;
+    # kitchen/dining reach the backbone through the REQUIRED_ADJ chain to living.
+    door_u = _ceil_u(Z.ACCESS_DOOR_M)
+    circ: ZoneId = "circulation"
+
+    def _attach(zone: ZoneId, targets: list[ZoneId], tag: str) -> None:
+        opts = [
+            _share_wall(m, zv[zone], zv[t], door_u, f"{tag}_{t}")
+            for t in targets
+            if t in zv and t != zone
+        ]
+        if opts:
+            m.AddBoolOr(opts)
+
+    if circ in zv:
+        _attach(circ, ["entry", "living"], "acc_circ")        # backbone anchor
+        _attach("entry", [circ, "living"], "acc_entry")       # backbone
+        _attach("living", [circ, "entry"], "acc_living")      # backbone
+        _attach("garage", ["entry", circ], "acc_garage")
+        if "master_suite" in zv:
+            # master is NOT a plain attach: force the corridor to front the SOUTH
+            # Bedroom band (overlap >= the bedroom's min depth, which cannot fit in
+            # the ~2.5 m north ensuite strip), so the private suite is entered from
+            # circulation, never through the living room (the SNiP violation the
+            # render caught). Same family as the children center-cover.
+            mbed_u = _ceil_u(standards.ROOMS["Master Bedroom"].min_h_m)
+            _force_vertical_overlap(m, zv[circ], zv["master_suite"], mbed_u, "acc_master")
+        if "children" in zv and _CHILD_CENTER_COVER:
+            # children is NOT a plain attach: force the corridor to front the
+            # central Bathroom band so the hall Bathroom is corridor-DIRECT (beds
+            # reach through it). This also connects children to the backbone.
+            bath_u = _ceil_u(standards.ROOMS["Bathroom"].min_h_m)
+            _force_vertical_cover_center(m, zv[circ], zv["children"], bath_u, "acc_child")
+        elif "children" in zv:  # diagnostic path: plain disjunction, no Bathroom-direct guarantee
+            _attach("children", [circ, "entry"], "acc_child")
+        _attach("office", [circ, "entry", "living"], "acc_office")
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
     # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met

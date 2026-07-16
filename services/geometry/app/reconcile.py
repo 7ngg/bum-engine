@@ -19,39 +19,48 @@ This runs AFTER validation and BEFORE solve().
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from .models import Program
 
 GARAGE_ID = "garage"
 
 
-def reconcile_program(program: Program) -> tuple[Program, list[str]]:
-    """Return (reconciled program, warnings). Rescales habitable space targets so
-    the grand total equals footprint_target_m2, holding the garage at its brief
-    value. A no-op (returns the input) when there is nothing sensible to scale or
-    the targets already reconcile."""
+def reconcile_program(
+    program: Program, held: Iterable[str] = (GARAGE_ID,)
+) -> tuple[Program, list[str]]:
+    """Return (reconciled program, warnings). Rescales the FLEX space targets so
+    the grand total equals footprint_target_m2, holding every id in `held` at its
+    brief value. A no-op (returns the input) when there is nothing sensible to
+    scale or the targets already reconcile.
+
+    `held` defaults to the garage (sized by car count, outside the habitable
+    headline). Task 5 also holds the injected `circulation` corridor so the
+    derived corridor target survives the rescale and the other habitable rooms
+    absorb the whole footprint delta."""
     warnings: list[str] = []
+    held_ids = set(held)
     spaces = program.spaces
     total = sum(s.target_m2 for s in spaces)
     footprint = program.footprint_target_m2
 
-    garage = next((s for s in spaces if s.id == GARAGE_ID), None)
-    garage_t = garage.target_m2 if garage is not None else 0.0
-    habitable_total = total - garage_t
-    habitable_budget = footprint - garage_t
+    held_total = sum(s.target_m2 for s in spaces if s.id in held_ids)
+    flex_total = total - held_total
+    flex_budget = footprint - held_total
 
-    if habitable_total <= 0 or habitable_budget <= 0:
+    if flex_total <= 0 or flex_budget <= 0:
         return program, warnings
     if abs(total - footprint) <= 1e-6:
         return program, warnings
 
-    factor = habitable_budget / habitable_total
+    factor = flex_budget / flex_total
     new_spaces = [
-        s if s.id == GARAGE_ID else s.model_copy(update={"target_m2": s.target_m2 * factor})
+        s if s.id in held_ids else s.model_copy(update={"target_m2": s.target_m2 * factor})
         for s in spaces
     ]
     reconciled = program.model_copy(update={"spaces": new_spaces})
     warnings.append(
         f"targets rescaled {total:.0f} -> {footprint:.0f} m2 "
-        f"(habitable x{factor:.3f}, garage held at {garage_t:.0f})"
+        f"(flex x{factor:.3f}, held {sorted(held_ids)} at {held_total:.0f})"
     )
     return reconciled, warnings

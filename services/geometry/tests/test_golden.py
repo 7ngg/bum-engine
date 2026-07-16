@@ -26,12 +26,20 @@ from app.solver import solve
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 
-EXPECTED_OBJECTIVE = 841.765625
+# Task 5: the golden freezes the ROOMY plot (20x24; the tight plot can no longer
+# host a circulation tree). Corridor is a live zone and the door graph is the
+# access tree, so objective, counts and coordinates all moved from Task 4. Phase
+# 4's setback envelope broke the plot's translational symmetry, so the solve now
+# PROVES optimal in ~1.2 s at workers=1 — deterministic, no longer the 30 s+
+# symmetry grind of the setback-less interim plot. These portable invariants plus
+# the access-graph checks are the primary guard; the exact-coordinate signature
+# is trustworthy again now that the structure has settled.
+EXPECTED_OBJECTIVE = 88.09375
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
     "Bedroom 2", "Bedroom 3", "Bathroom",
-    "Office", "Foyer", "Mudroom", "Garage",
+    "Office", "Foyer", "Mudroom", "Garage", "Corridor",
 }
 
 
@@ -58,8 +66,8 @@ def _load_golden() -> dict | None:
     return json.loads(GOLDEN.read_text()) if GOLDEN.exists() else None
 
 
-def test_golden_invariants_portable(tight_program):
-    program = tight_program
+def test_golden_invariants_portable(roomy_program):
+    program = roomy_program
     r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
     assert r.status == "OPTIMAL"
     assert r.objective == EXPECTED_OBJECTIVE
@@ -105,8 +113,8 @@ _toolchain_mismatch = _golden is not None and _golden.get("toolchain") != _curre
         f"coordinates non-portable across toolchains (see test_golden_invariants_portable)"
     ),
 )
-def test_golden_exact_coordinates(tight_program):
-    program = tight_program
+def test_golden_exact_coordinates(roomy_program):
+    program = roomy_program
     r = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
     sig = _room_signature(build_layout(r, program))
     if _golden is None:
