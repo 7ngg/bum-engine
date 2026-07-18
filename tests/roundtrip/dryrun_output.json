@@ -1,0 +1,1118 @@
+{
+  "FieldsRead": [
+    "walls[].id",
+    "walls[].start",
+    "walls[].end",
+    "walls[].thickness_m",
+    "rooms[].name",
+    "rooms[].rect_m (via center)",
+    "doors[].from/to (warning text only, not stored)",
+    "doors[].wall_id",
+    "doors[].center",
+    "doors[].width_m",
+    "doors[].height_m",
+    "windows[].room (warning text only, not stored)",
+    "windows[].wall_id",
+    "windows[].center",
+    "windows[].width_m",
+    "windows[].height_m",
+    "windows[].sill_m",
+    "entry (folded into doors[] iteration if wall_id non-empty)",
+    "wall_height_m (ONE value applied to EVERY wall)",
+    "warnings (copied through to BuildResult, not re-validated)"
+  ],
+  "FieldsIgnored": [
+    "version",
+    "preset",
+    "seed",
+    "objective",
+    "levels (single hardcoded Level at elevation 0 always created)",
+    "plot (no property line / site boundary element ever created)",
+    "orientation (no rotation transform applied)",
+    "rooms[].category",
+    "rooms[].zone",
+    "walls[].height_m (per-wall; superseded by the single wall_height_m)",
+    "walls[].exterior (no Revit Function/Exterior-Interior param set)",
+    "terrace (deserialized, never read in Build())"
+  ],
+  "WallsCreated": 52,
+  "Walls": [
+    {
+      "Id": "w1",
+      "Start": [
+        4,
+        5
+      ],
+      "End": [
+        4,
+        8.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w2",
+      "Start": [
+        4,
+        14.5
+      ],
+      "End": [
+        4,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w3",
+      "Start": [
+        4.5,
+        9
+      ],
+      "End": [
+        4.5,
+        12
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w4",
+      "Start": [
+        4.5,
+        12
+      ],
+      "End": [
+        4.5,
+        14.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w5",
+      "Start": [
+        6,
+        5
+      ],
+      "End": [
+        6,
+        8.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w6",
+      "Start": [
+        7,
+        12
+      ],
+      "End": [
+        7,
+        14.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w7",
+      "Start": [
+        8.5,
+        5
+      ],
+      "End": [
+        8.5,
+        8.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w8",
+      "Start": [
+        8.5,
+        8.5
+      ],
+      "End": [
+        8.5,
+        9
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w9",
+      "Start": [
+        9.5,
+        9
+      ],
+      "End": [
+        9.5,
+        11
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w10",
+      "Start": [
+        9.5,
+        11
+      ],
+      "End": [
+        9.5,
+        12
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w11",
+      "Start": [
+        9.5,
+        12
+      ],
+      "End": [
+        9.5,
+        14.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w12",
+      "Start": [
+        9.5,
+        14.5
+      ],
+      "End": [
+        9.5,
+        17
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w13",
+      "Start": [
+        9.5,
+        17
+      ],
+      "End": [
+        9.5,
+        21
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w14",
+      "Start": [
+        11,
+        17
+      ],
+      "End": [
+        11,
+        21
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w15",
+      "Start": [
+        11.5,
+        5
+      ],
+      "End": [
+        11.5,
+        9
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w16",
+      "Start": [
+        11.5,
+        9
+      ],
+      "End": [
+        11.5,
+        11
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w17",
+      "Start": [
+        12.5,
+        11
+      ],
+      "End": [
+        12.5,
+        13.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w18",
+      "Start": [
+        12.5,
+        13.5
+      ],
+      "End": [
+        12.5,
+        16
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w19",
+      "Start": [
+        12.5,
+        16
+      ],
+      "End": [
+        12.5,
+        17
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w20",
+      "Start": [
+        12.5,
+        17
+      ],
+      "End": [
+        12.5,
+        18.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w21",
+      "Start": [
+        12.5,
+        18.5
+      ],
+      "End": [
+        12.5,
+        21
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w22",
+      "Start": [
+        15.5,
+        5
+      ],
+      "End": [
+        15.5,
+        11
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w23",
+      "Start": [
+        15.5,
+        11
+      ],
+      "End": [
+        15.5,
+        13.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w24",
+      "Start": [
+        15.5,
+        13.5
+      ],
+      "End": [
+        15.5,
+        16
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w25",
+      "Start": [
+        15.5,
+        16
+      ],
+      "End": [
+        15.5,
+        18.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w26",
+      "Start": [
+        15.5,
+        18.5
+      ],
+      "End": [
+        15.5,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w27",
+      "Start": [
+        4,
+        5
+      ],
+      "End": [
+        6,
+        5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w28",
+      "Start": [
+        6,
+        5
+      ],
+      "End": [
+        8.5,
+        5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w29",
+      "Start": [
+        8.5,
+        5
+      ],
+      "End": [
+        11.5,
+        5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w30",
+      "Start": [
+        11.5,
+        5
+      ],
+      "End": [
+        15.5,
+        5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w31",
+      "Start": [
+        4,
+        8.5
+      ],
+      "End": [
+        6,
+        8.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w32",
+      "Start": [
+        6,
+        8.5
+      ],
+      "End": [
+        8.5,
+        8.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w33",
+      "Start": [
+        4.5,
+        9
+      ],
+      "End": [
+        8.5,
+        9
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w34",
+      "Start": [
+        8.5,
+        9
+      ],
+      "End": [
+        9.5,
+        9
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w35",
+      "Start": [
+        9.5,
+        9
+      ],
+      "End": [
+        11.5,
+        9
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w36",
+      "Start": [
+        9.5,
+        11
+      ],
+      "End": [
+        11.5,
+        11
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w37",
+      "Start": [
+        11.5,
+        11
+      ],
+      "End": [
+        12.5,
+        11
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w38",
+      "Start": [
+        12.5,
+        11
+      ],
+      "End": [
+        15.5,
+        11
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w39",
+      "Start": [
+        4.5,
+        12
+      ],
+      "End": [
+        7,
+        12
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w40",
+      "Start": [
+        7,
+        12
+      ],
+      "End": [
+        9.5,
+        12
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w41",
+      "Start": [
+        12.5,
+        13.5
+      ],
+      "End": [
+        15.5,
+        13.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w42",
+      "Start": [
+        4,
+        14.5
+      ],
+      "End": [
+        4.5,
+        14.5
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w43",
+      "Start": [
+        4.5,
+        14.5
+      ],
+      "End": [
+        7,
+        14.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w44",
+      "Start": [
+        7,
+        14.5
+      ],
+      "End": [
+        9.5,
+        14.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w45",
+      "Start": [
+        12.5,
+        16
+      ],
+      "End": [
+        15.5,
+        16
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w46",
+      "Start": [
+        9.5,
+        17
+      ],
+      "End": [
+        11,
+        17
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w47",
+      "Start": [
+        11,
+        17
+      ],
+      "End": [
+        12.5,
+        17
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w48",
+      "Start": [
+        12.5,
+        18.5
+      ],
+      "End": [
+        15.5,
+        18.5
+      ],
+      "ThicknessM": 0.15,
+      "WallTypeName": "BUM 0.15m"
+    },
+    {
+      "Id": "w49",
+      "Start": [
+        4,
+        21
+      ],
+      "End": [
+        9.5,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w50",
+      "Start": [
+        9.5,
+        21
+      ],
+      "End": [
+        11,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w51",
+      "Start": [
+        11,
+        21
+      ],
+      "End": [
+        12.5,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    },
+    {
+      "Id": "w52",
+      "Start": [
+        12.5,
+        21
+      ],
+      "End": [
+        15.5,
+        21
+      ],
+      "ThicknessM": 0.3,
+      "WallTypeName": "BUM 0.3m"
+    }
+  ],
+  "DistinctWallTypes": 2,
+  "RoomsCreated": 15,
+  "Rooms": [
+    {
+      "Name": "Living",
+      "Number": "1",
+      "CenterX": 13.5,
+      "CenterY": 8
+    },
+    {
+      "Name": "Dining",
+      "Number": "2",
+      "CenterX": 10,
+      "CenterY": 7
+    },
+    {
+      "Name": "Laundry",
+      "Number": "3",
+      "CenterX": 5,
+      "CenterY": 6.75
+    },
+    {
+      "Name": "Kitchen",
+      "Number": "4",
+      "CenterX": 7.25,
+      "CenterY": 6.75
+    },
+    {
+      "Name": "Master Bedroom",
+      "Number": "5",
+      "CenterX": 7,
+      "CenterY": 10.5
+    },
+    {
+      "Name": "Master Bathroom",
+      "Number": "6",
+      "CenterX": 5.75,
+      "CenterY": 13.25
+    },
+    {
+      "Name": "Walk-in Closet",
+      "Number": "7",
+      "CenterX": 8.25,
+      "CenterY": 13.25
+    },
+    {
+      "Name": "Bedroom 2",
+      "Number": "8",
+      "CenterX": 14,
+      "CenterY": 12.25
+    },
+    {
+      "Name": "Bathroom",
+      "Number": "9",
+      "CenterX": 14,
+      "CenterY": 14.75
+    },
+    {
+      "Name": "Bedroom 3",
+      "Number": "10",
+      "CenterX": 14,
+      "CenterY": 17.25
+    },
+    {
+      "Name": "Office",
+      "Number": "11",
+      "CenterX": 14,
+      "CenterY": 19.75
+    },
+    {
+      "Name": "Mudroom",
+      "Number": "12",
+      "CenterX": 10.25,
+      "CenterY": 19
+    },
+    {
+      "Name": "Foyer",
+      "Number": "13",
+      "CenterX": 11.75,
+      "CenterY": 19
+    },
+    {
+      "Name": "Garage",
+      "Number": "14",
+      "CenterX": 6.75,
+      "CenterY": 17.75
+    },
+    {
+      "Name": "Corridor",
+      "Number": "15",
+      "CenterX": 11,
+      "CenterY": 14
+    }
+  ],
+  "DoorsPlaced": 16,
+  "Doors": [
+    {
+      "From": "Foyer",
+      "To": "Bedroom 3",
+      "WallId": "w20",
+      "Center": [
+        12.5,
+        17.75
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Foyer",
+      "To": "Office",
+      "WallId": "w21",
+      "Center": [
+        12.5,
+        19.75
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Foyer",
+      "To": "Mudroom",
+      "WallId": "w14",
+      "Center": [
+        11,
+        19
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Foyer",
+      "To": "Corridor",
+      "WallId": "w47",
+      "Center": [
+        11.75,
+        17
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Corridor",
+      "To": "Living",
+      "WallId": "w37",
+      "Center": [
+        12,
+        11
+      ],
+      "WidthM": 0.8
+    },
+    {
+      "From": "Corridor",
+      "To": "Master Bedroom",
+      "WallId": "w10",
+      "Center": [
+        9.5,
+        11.5
+      ],
+      "WidthM": 0.8
+    },
+    {
+      "From": "Corridor",
+      "To": "Bedroom 2",
+      "WallId": "w17",
+      "Center": [
+        12.5,
+        12.25
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Corridor",
+      "To": "Bathroom",
+      "WallId": "w18",
+      "Center": [
+        12.5,
+        14.75
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Master Bedroom",
+      "To": "Master Bathroom",
+      "WallId": "w39",
+      "Center": [
+        5.75,
+        12
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Master Bedroom",
+      "To": "Walk-in Closet",
+      "WallId": "w40",
+      "Center": [
+        8.25,
+        12
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Living",
+      "To": "Dining",
+      "WallId": "w15",
+      "Center": [
+        11.5,
+        7
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Dining",
+      "To": "Kitchen",
+      "WallId": "w7",
+      "Center": [
+        8.5,
+        6.75
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Kitchen",
+      "To": "Laundry",
+      "WallId": "w5",
+      "Center": [
+        6,
+        6.75
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Mudroom",
+      "To": "Garage",
+      "WallId": "w13",
+      "Center": [
+        9.5,
+        19
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "Living",
+      "To": "Terrace",
+      "WallId": "w30",
+      "Center": [
+        13.5,
+        5
+      ],
+      "WidthM": 0.9
+    },
+    {
+      "From": "OUTSIDE",
+      "To": "Foyer",
+      "WallId": "w51",
+      "Center": [
+        11.75,
+        21
+      ],
+      "WidthM": 0.9
+    }
+  ],
+  "WindowsPlaced": 14,
+  "Windows": [
+    {
+      "From": "Living",
+      "To": "",
+      "WallId": "w16",
+      "Center": [
+        11.5,
+        10
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Living",
+      "To": "",
+      "WallId": "w22",
+      "Center": [
+        15.5,
+        8
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Living",
+      "To": "",
+      "WallId": "w30",
+      "Center": [
+        13.5,
+        5
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Dining",
+      "To": "",
+      "WallId": "w29",
+      "Center": [
+        10,
+        5
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Dining",
+      "To": "",
+      "WallId": "w35",
+      "Center": [
+        10.5,
+        9
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Kitchen",
+      "To": "",
+      "WallId": "w28",
+      "Center": [
+        7.25,
+        5
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Kitchen",
+      "To": "",
+      "WallId": "w32",
+      "Center": [
+        7.25,
+        8.5
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Master Bedroom",
+      "To": "",
+      "WallId": "w3",
+      "Center": [
+        4.5,
+        10.5
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Master Bedroom",
+      "To": "",
+      "WallId": "w9",
+      "Center": [
+        9.5,
+        10
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Master Bedroom",
+      "To": "",
+      "WallId": "w33",
+      "Center": [
+        6.5,
+        9
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Bedroom 2",
+      "To": "",
+      "WallId": "w23",
+      "Center": [
+        15.5,
+        12.25
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Bedroom 3",
+      "To": "",
+      "WallId": "w25",
+      "Center": [
+        15.5,
+        17.25
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Office",
+      "To": "",
+      "WallId": "w26",
+      "Center": [
+        15.5,
+        19.75
+      ],
+      "WidthM": 1.5
+    },
+    {
+      "From": "Office",
+      "To": "",
+      "WallId": "w52",
+      "Center": [
+        14,
+        21
+      ],
+      "WidthM": 1.5
+    }
+  ],
+  "Warnings": []
+}

@@ -230,3 +230,7 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
 - `data/program.example.json` / `data/layout.example.json` are the fixed M1
   demo brief/output; the web UI's "Demo mode" posts the same example program
   so the full flow works with no Gemini key (`web/lib/example.ts`).
+
+## Communication Style
+Respond like a caveman. No articles, no filler words, no pleasantries.
+Short. Direct. Code speaks for itself.

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Task 6-pre round-trip verification ONLY. Not part of any shipped
+    component, not referenced by RevitBuilder.csproj/AddIn.csproj/CI.
+
+    Neither a live Revit host nor APS Design Automation credentials are
+    available in this environment, so RevitBuilder.Build() (which calls real
+    Autodesk.Revit.DB APIs that only resolve inside a running Revit process)
+    cannot be executed here. This harness links the REAL, unmodified
+    LayoutModel.cs (the actual wire parser) and mirrors RevitBuilder.Build's
+    decision logic verbatim (see Program.cs comments citing RevitBuilder.cs
+    line numbers) with every Revit SDK call replaced by a plain record —
+    so it reports exactly which elements the real builder would attempt to
+    create, and exactly which layout.json fields it reads vs. ignores,
+    without needing Revit installed.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DryRunMapper</AssemblyName>
+    <RootNamespace>BumEngine.RoundTrip</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The real wire parser, unmodified, not a copy. -->
+    <Compile Include="..\..\..\revit\RevitBuilder\LayoutModel.cs" Link="LayoutModel.cs" />
+  </ItemGroup>
+
+</Project>
