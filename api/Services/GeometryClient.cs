@@ -26,6 +26,14 @@ public class GeometryClient
         return await ReadOrThrow(resp, ct);
     }
 
+    /// <summary>The demo-mode example program (services/geometry/data/program.example.json),
+    /// served by the geometry service so it stays the single source of truth.</summary>
+    public async Task<JsonDocument> GetExampleProgramAsync(CancellationToken ct)
+    {
+        using var resp = await _http.GetAsync("/example", ct);
+        return await ReadOrThrow(resp, ct);
+    }
+
     private static async Task<JsonDocument> ReadOrThrow(HttpResponseMessage resp, CancellationToken ct)
     {
         var stream = await resp.Content.ReadAsStreamAsync(ct);

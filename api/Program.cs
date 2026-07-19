@@ -40,6 +40,20 @@ var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPoli
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", geometry = geomUrl, export = exportOpts.Mode }));
 
+// web demo mode fetches this instead of keeping its own hand-maintained copy
+app.MapGet("/api/example-program", async (GeometryClient geom, CancellationToken ct) =>
+{
+    try
+    {
+        using var doc = await geom.GetExampleProgramAsync(ct);
+        return Results.Text(doc.RootElement.GetRawText(), "application/json");
+    }
+    catch (GeometryServiceException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: 502);
+    }
+});
+
 // brief -> extract -> generate -> persist program + variants
 app.MapPost("/api/projects", async (CreateProjectRequest req, GeometryClient geom, AppDbContext db, CancellationToken ct) =>
 {

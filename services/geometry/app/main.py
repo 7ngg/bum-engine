@@ -10,7 +10,9 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -20,6 +22,8 @@ from .gemini import GeminiError, extract_program
 from .generate import generate
 from .models import Program
 from .schema_io import validate_program
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 app = FastAPI(title="bum-engine geometry service", version=__version__)
 
@@ -47,6 +51,14 @@ class CriticRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "version": __version__, "gemini": bool(os.environ.get("GEMINI_API_KEY"))}
+
+
+@app.get("/example")
+def example_program() -> dict:
+    """data/program.example.json, served so the web UI's demo mode has one
+    source of truth instead of a hand-maintained TS copy (they had already
+    drifted from each other once)."""
+    return json.loads((DATA_DIR / "program.example.json").read_text())
 
 
 @app.post("/extract")

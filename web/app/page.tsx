@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createProject, exportVariant, rvtUrl, ProjectDto, VariantDto } from "@/lib/api";
-import { EXAMPLE_PROGRAM } from "@/lib/example";
+import { createProject, exportVariant, getExampleProgram, rvtUrl, ProjectDto, VariantDto } from "@/lib/api";
 
 export default function Home() {
   const [prompt, setPrompt] = useState(
@@ -24,7 +23,7 @@ export default function Home() {
     setExports({});
     try {
       const p = await createProject(
-        useExample ? { program: EXAMPLE_PROGRAM, n: 3 } : { prompt, n: 3 }
+        useExample ? { program: await getExampleProgram(), n: 3 } : { prompt, n: 3 }
       );
       setProject(p);
       setSelected(p.variants[0]?.id ?? null);

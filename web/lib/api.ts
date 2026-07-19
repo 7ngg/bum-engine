@@ -30,6 +30,14 @@ async function json<T>(res: Response): Promise<T> {
   return body as T;
 }
 
+// The demo-mode program, single-sourced from services/geometry/data/program.example.json
+// (served by the geometry service's GET /example, proxied through the orchestrator) —
+// not a hand-maintained copy.
+export async function getExampleProgram(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/example-program`);
+  return json(res);
+}
+
 export async function createProject(input: {
   prompt?: string;
   program?: unknown;

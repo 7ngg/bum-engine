@@ -227,9 +227,14 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
   names/rects/counts) in `tests/golden/gW_eN_seed1.json`. A failure means the
   layout drifted — inspect the diff and regenerate the golden file only if
   the drift is intended (delete it and rerun to have it recreate itself).
-- `data/program.example.json` / `data/layout.example.json` are the fixed M1
-  demo brief/output; the web UI's "Demo mode" posts the same example program
-  so the full flow works with no Gemini key (`web/lib/example.ts`).
+- `services/geometry/data/program.example.json` / `layout.example.json` are the
+  fixed demo brief/output (the roomy 20x24 program; the retired tight 16x12
+  brief lives on as `program_illegal_example.json` for the infeasibility test).
+  The web UI's "Demo mode" fetches this same program at runtime via
+  `GET /example` on the geometry service (proxied through the orchestrator as
+  `GET /api/example-program`, called from `web/lib/api.ts`'s
+  `getExampleProgram`) rather than keeping a second hand-maintained copy — the
+  two had already drifted from each other once.
 
 ## Communication Style
 Respond like a caveman. No articles, no filler words, no pleasantries.
