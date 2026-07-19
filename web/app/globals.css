@@ -40,6 +40,11 @@ textarea {
   border-radius: 8px;
   font: inherit;
 }
+textarea:disabled {
+  background: var(--bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
 
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 

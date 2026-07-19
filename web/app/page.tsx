@@ -6,7 +6,7 @@ import { EXAMPLE_PROGRAM } from "@/lib/example";
 
 export default function Home() {
   const [prompt, setPrompt] = useState(
-    "A single-storey family home on a 16x12 m plot: double garage, open living/dining/kitchen, a master suite, two kids' bedrooms, a home office and an entry."
+    "A single-storey family home on a 20x24 m plot: double garage, open living/dining/kitchen, a master suite, two kids' bedrooms, a home office and an entry."
   );
   const [useExample, setUseExample] = useState(true);
   const [loading, setLoading] = useState(false);

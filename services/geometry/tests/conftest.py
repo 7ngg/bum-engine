@@ -53,5 +53,7 @@ def roomy_program() -> Program:
 @pytest.fixture(scope="session")
 def tight_program() -> Program:
     # Retired to a single xfail: the illegal 16x12 brief that can no longer host
-    # circulation (and, per Phase 4, exceeds the coverage cap).
-    return Program.model_validate(_load("program.example.json"))
+    # circulation (and, per Phase 4, exceeds the coverage cap). program.example.json
+    # is now the roomy 20x24 demo brief (Task 6-pre-c) so this fixture lives under
+    # its own name.
+    return Program.model_validate(_load("program_illegal_example.json"))

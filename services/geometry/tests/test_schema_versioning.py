@@ -10,7 +10,10 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 
 
 def test_v1_0_0_example_program_unchanged_still_validates():
-    data = json.loads((DATA / "program.example.json").read_text())
+    # program.example.json moved to the roomy 20x24 demo brief (Task 6-pre-c);
+    # this test specifically needs a genuine 1.0.0 document, which is now
+    # program_illegal_example.json (the retired tight 16x12 brief).
+    data = json.loads((DATA / "program_illegal_example.json").read_text())
     assert data["version"] == "1.0.0"
     assert validate_program(data) == []
     prog = Program.model_validate(data)

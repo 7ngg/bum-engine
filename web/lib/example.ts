@@ -1,10 +1,10 @@
 // Demo program so the UI works end to end without a Gemini key.
 // Mirrors services/geometry/data/program.example.json.
 export const EXAMPLE_PROGRAM = {
-  version: "1.0.0",
-  plot: { width_m: 16.0, depth_m: 12.0 },
+  version: "1.2.0",
+  plot: { width_m: 20.0, depth_m: 24.0 },
   orientation: "N",
-  target_area_m2: 160.0,
+  footprint_target_m2: 160.0,
   floors: 1,
   spaces: [
     { id: "garage", target_m2: 36.0, min_w_m: 5.4, min_h_m: 5.4, category: "service", tags: ["parking"] },
@@ -17,8 +17,8 @@ export const EXAMPLE_PROGRAM = {
     { id: "entry", target_m2: 12.0, min_w_m: 3.0, min_h_m: 3.0, category: "circ", tags: ["composite"] },
   ],
   adjacency: {
-    desirable: [["kitchen_laundry", "dining"], ["dining", "living"], ["entry", "living"], ["children", "living"]],
-    semi: [["entry", "office"], ["garage", "entry"], ["kitchen_laundry", "entry"]],
+    desirable: [["entry", "living"], ["entry", "office"], ["entry", "children"], ["garage", "entry"], ["kitchen_laundry", "entry"], ["children", "living"]],
+    semi: [],
     avoid: [["master_suite", "kitchen_laundry"], ["garage", "living"]],
   },
 };
