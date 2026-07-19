@@ -24,6 +24,7 @@ namespace BumEngine.Revit
             public int Rooms;
             public int Doors;
             public int Windows;
+            public int Terraces;
             public readonly List<string> Warnings = new();
             public string? SavedPath;
         }
@@ -42,6 +43,9 @@ namespace BumEngine.Revit
                 tx.Start();
                 TrySetMetresDisplayUnits(doc);
 
+                // KNOWN BROKEN: schema advertises levels 1-4 (layout.Levels) but only
+                // ever one Level at elevation 0 is created here — multi-storey layouts
+                // are not built. Not fixed in this change.
                 var level = GetOrCreateLevel(doc, 0.0);
                 var wallHeightFt = ToFeet(layout.WallHeightM);
 
@@ -49,6 +53,7 @@ namespace BumEngine.Revit
                 doc.Regenerate(); // let rooms see the wall enclosure
 
                 CreateRooms(doc, layout, level, result);
+                CreateTerrace(doc, layout, level, result);
 
                 var doorSymbol = FindSymbol(doc, BuiltInCategory.OST_Doors);
                 var windowSymbol = FindSymbol(doc, BuiltInCategory.OST_Windows);
@@ -79,10 +84,10 @@ namespace BumEngine.Revit
 
         // ---- walls ----------------------------------------------------------
 
-        private Dictionary<string, Wall> CreateWalls(
+        private Dictionary<string, Autodesk.Revit.DB.Wall> CreateWalls(
             Document doc, LayoutModel layout, Level level, double heightFt, BuildResult result)
         {
-            var byId = new Dictionary<string, Wall>();
+            var byId = new Dictionary<string, Autodesk.Revit.DB.Wall>();
             var typeCache = new Dictionary<double, WallType>();
 
             foreach (var w in layout.Walls)
@@ -98,6 +103,17 @@ namespace BumEngine.Revit
                 var wallType = GetWallType(doc, w.ThicknessM, typeCache);
                 var wall = Autodesk.Revit.DB.Wall.Create(
                     doc, line, wallType.Id, level.Id, heightFt, 0.0, false, /*structural*/ false);
+                // slicer.py rasterises walls with `start`/`end` on the shared boundary
+                // line between the two rooms' rects (see _build_walls in slicer.py —
+                // Room.rect_m is written straight from that same rect, no thickness
+                // clearance carved out), and revit/README.md documents walls[] as
+                // "centerline" — so the curve passed above IS the centerline, not a
+                // face. Pin that explicitly: the SDK default here must not be left to
+                // infer, since the wrong choice silently doubles up wall thickness
+                // into the adjoining rooms (or leaves a gap) without any error.
+                var locParam = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+                if (locParam != null && !locParam.IsReadOnly)
+                    locParam.Set((int)WallLocationLine.WallCenterline);
                 // exterior/interior tuning could set function via wallType; left default.
                 byId[w.Id] = wall;
                 result.Walls++;
@@ -160,10 +176,49 @@ namespace BumEngine.Revit
             }
         }
 
+        // ---- terrace ----------------------------------------------------------
+
+        private void CreateTerrace(Document doc, LayoutModel layout, Level level, BuildResult result)
+        {
+            var t = layout.Terrace;
+            if (t == null) return;
+
+            var floorType = new FilteredElementCollector(doc)
+                .OfClass(typeof(FloorType)).Cast<FloorType>()
+                .FirstOrDefault(ft => !ft.IsFoundationSlab);
+            if (floorType == null)
+            {
+                result.Warnings.Add("no floor type available; terrace slab skipped");
+                return;
+            }
+
+            var x0 = ToFeet(t.RectM[0]);
+            var y0 = ToFeet(t.RectM[1]);
+            var x1 = ToFeet(t.RectM[2]);
+            var y1 = ToFeet(t.RectM[3]);
+            var loop = CurveLoop.Create(new List<Curve>
+            {
+                Line.CreateBound(new XYZ(x0, y0, 0), new XYZ(x1, y0, 0)),
+                Line.CreateBound(new XYZ(x1, y0, 0), new XYZ(x1, y1, 0)),
+                Line.CreateBound(new XYZ(x1, y1, 0), new XYZ(x0, y1, 0)),
+                Line.CreateBound(new XYZ(x0, y1, 0), new XYZ(x0, y0, 0)),
+            });
+
+            try
+            {
+                Floor.Create(doc, new List<CurveLoop> { loop }, floorType.Id, level.Id);
+                result.Terraces++;
+            }
+            catch (Exception ex)
+            {
+                result.Warnings.Add($"terrace slab failed: {ex.Message}");
+            }
+        }
+
         // ---- openings -------------------------------------------------------
 
         private void PlaceDoors(
-            Document doc, LayoutModel layout, Level level, Dictionary<string, Wall> walls,
+            Document doc, LayoutModel layout, Level level, Dictionary<string, Autodesk.Revit.DB.Wall> walls,
             FamilySymbol? symbol, BuildResult result)
         {
             if (symbol == null)
@@ -192,7 +247,7 @@ namespace BumEngine.Revit
         }
 
         private void PlaceWindows(
-            Document doc, LayoutModel layout, Level level, Dictionary<string, Wall> walls,
+            Document doc, LayoutModel layout, Level level, Dictionary<string, Autodesk.Revit.DB.Wall> walls,
             FamilySymbol? symbol, BuildResult result)
         {
             if (symbol == null)
