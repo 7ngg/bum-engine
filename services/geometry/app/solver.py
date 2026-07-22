@@ -239,13 +239,17 @@ def _force_vertical_overlap(
     m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, min_overlap: int, tag: str
 ) -> None:
     """Force `corr` (corridor) adjacent to `zone` (master suite) on a vertical E/W
-    wall whose y-overlap is >= `min_overlap`. Used with min_overlap = the Master
-    Bedroom's min depth: the suite's ~2.5 m north bath/closet strip is shorter
-    than that, so an overlap this long CANNOT sit entirely in the strip — it must
-    reach the south Bedroom band, giving the BEDROOM (not just the ensuite) a
-    corridor wall so the private suite is entered from circulation, never through
-    the living room. Same family as _force_vertical_cover_center; constrains only
-    the overlap length (no y-pin) so it composes with the children center-cover."""
+    wall whose y-overlap is >= `min_overlap`. Used with min_overlap = the north
+    bath/closet strip's depth + a full door width: the strip is shorter than
+    that, so an overlap this long CANNOT sit entirely in the strip — it must
+    reach the south Bedroom band by at least a door width, giving the BEDROOM
+    (not just the ensuite) a real, door-worthy corridor wall so the private
+    suite is entered from circulation, never through the living room. (Do not
+    pass just the Bedroom's own min depth here — it clears the strip by only
+    ~0.5m, under ACCESS_DOOR_M, which access_tree can then refuse to award a
+    door for. See the call site.) Same family as _force_vertical_cover_center;
+    constrains only the overlap length (no y-pin) so it composes with the
+    children center-cover."""
     cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone
     cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone
     m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
@@ -577,11 +581,32 @@ def _solve_once(
         _attach("garage", ["entry", circ], "acc_garage")
         if "master_suite" in zv:
             # master is NOT a plain attach: force the corridor to front the SOUTH
-            # Bedroom band (overlap >= the bedroom's min depth, which cannot fit in
-            # the ~2.5 m north ensuite strip), so the private suite is entered from
-            # circulation, never through the living room (the SNiP violation the
-            # render caught). Same family as the children center-cover.
-            mbed_u = _ceil_u(standards.ROOMS["Master Bedroom"].min_h_m)
+            # Bedroom band, past the north Bathroom|Closet service strip, so the
+            # private suite is entered from circulation, never through the living
+            # room (the SNiP violation the render caught). Same family as the
+            # children center-cover.
+            #
+            # The overlap floor must clear the service strip by a FULL DOOR WIDTH,
+            # not by whatever margin the Bedroom's own min depth happens to leave.
+            # This used to be plain `_ceil_u(Master Bedroom.min_h_m)` (2.84m raw,
+            # 3.0m grid-ceiled) — which only exceeds the ~2.5m strip depth by
+            # 0.5m. That 0.5m guaranteed spillover is BELOW ACCESS_DOOR_M (0.9m),
+            # so access_tree's geom.adjacent(..., ACCESS_DOOR_M) check can refuse
+            # to award a door even though this "guaranteed" touch is realised —
+            # a latent bug that doesn't show up while the solver has enough slack
+            # to over-satisfy the constraint, but confirmed to bite for real: an
+            # unrelated packing-pressure zone elsewhere in the model was enough to
+            # push the optimizer onto exactly a 0.5m spillover, leaving Master
+            # Bedroom/Bathroom/Walk-in Closet unreachable despite the "guaranteed"
+            # circulation touch. Compute the true floor instead: strip depth +
+            # door width. service_u mirrors slicer._slice_master's `service`
+            # strip-depth formula exactly (keep them in sync if either standard
+            # changes).
+            service_u = _ceil_u(max(
+                standards.ROOMS["Master Bathroom"].min_h_m,
+                standards.ROOMS["Walk-in Closet"].min_h_m,
+            ))
+            mbed_u = service_u + door_u
             _force_vertical_overlap(m, zv[circ], zv["master_suite"], mbed_u, "acc_master")
         if "children" in zv and _CHILD_CENTER_COVER:
             # children is NOT a plain attach: force the corridor to front the
