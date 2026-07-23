@@ -45,20 +45,23 @@ def test_empty_adjacency_reproduces_default_objective(raw_program, roomy_program
 
 def test_extra_desirable_pair_changes_objective(raw_program, roomy_program):
     program = roomy_program
-    # office/children (neither required nor a default desirable/semi pair) is a
-    # REALIZABLE reward: on roomy gW_eN both zones pack into the NE quadrant and
-    # share a wall, so rewarding their adjacency is counted and the objective
-    # moves (+40, the desirable weight). NB the reward does NOT relocate zones:
-    # Task 5's hard access constraints pin the whole plan, so a soft desirable can
-    # only score a *coincidentally realized* adjacency, never pull two zones
-    # together (an audit found EVERY non-adjacent pair is a +0 no-op on this plot).
-    # That is why office/dining — the plausible-looking alternative — is the WRONG
-    # pair: office packs north, dining south, and no reward can move them, so it
-    # would be a silent no-op that never trips this assert.
+    # master_suite/office (neither required nor a default desirable/semi pair) is
+    # a REALIZABLE reward: on roomy gW_eN (184 m2, kitchen-direct constraint live
+    # — Task 6) the two zones happen to share a wall, so rewarding their adjacency
+    # is counted and the objective moves (+40, the desirable weight). NB the
+    # reward does NOT relocate zones: the hard access constraints pin the whole
+    # plan, so a soft desirable can only score a *coincidentally realized*
+    # adjacency, never pull two zones together (an audit found EVERY non-adjacent
+    # pair is a +0 no-op on this plot). That is why office/dining — the
+    # plausible-looking alternative — is the WRONG pair: office packs north,
+    # dining south, and no reward can move them, so it would be a silent no-op
+    # that never trips this assert. (Before Task 6 grew the fixture to 184 m2,
+    # office/children was the realized pair; the kitchen-direct constraint moved
+    # the packing enough that office/children no longer touch.)
     base = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
 
     augmented = copy.deepcopy(raw_program)
-    augmented["adjacency"]["desirable"].append(["office", "children"])
+    augmented["adjacency"]["desirable"].append(["master_suite", "office"])
     prog2 = Program.model_validate(augmented)
     r2 = solve(prog2, "gW_eN", seed=1, time_limit_s=12, workers=1)
 

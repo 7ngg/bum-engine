@@ -38,7 +38,9 @@ FEASIBLE_PRESETS = ["gW_eN", "gE_eN"]
 def test_feasible_all_presets(program, preset, solve_time_s):
     r = solve(program, preset, seed=1, time_limit_s=solve_time_s)
     assert r.feasible, f"{preset} infeasible"
-    assert r.objective > 0
+    # Objective sign carries no meaning (it's a sum of penalty/reward terms
+    # scaled by plot_cells, e.g. ADHERE deviation penalties dominate on the
+    # 184 m2 fixture) -- only relative comparisons are (see test_adjacency.py).
 
 
 @pytest.mark.parametrize("preset", ["gW_eW", "gE_eW"])

@@ -34,7 +34,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 # symmetry grind of the setback-less interim plot. These portable invariants plus
 # the access-graph checks are the primary guard; the exact-coordinate signature
 # is trustworthy again now that the structure has settled.
-EXPECTED_OBJECTIVE = 88.09375
+EXPECTED_OBJECTIVE = -15.5625
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",

@@ -2,7 +2,7 @@
   "version": "1.2.0",
   "plot": { "width_m": 20.0, "depth_m": 24.0 },
   "orientation": "N",
-  "footprint_target_m2": 160.0,
+  "footprint_target_m2": 184.0,
   "floors": 1,
   "spaces": [
     { "id": "garage",          "target_m2": 36.0, "min_w_m": 5.4, "min_h_m": 5.4, "category": "service", "tags": ["parking"] },
