@@ -617,6 +617,20 @@ def _solve_once(
         elif "children" in zv:  # diagnostic path: plain disjunction, no Bathroom-direct guarantee
             _attach("children", [circ, "entry"], "acc_child")
         _attach("office", [circ, "entry", "living"], "acc_office")
+        if "kitchen_laundry" in zv:
+            # Client-reported pathology: on undersized footprints the Kitchen was
+            # only reachable via the Dining->Living chain (REQUIRED_ADJ), so
+            # kitchen traffic routed through the living room. standards.py already
+            # flags Kitchen requires_circulation_access=True; this closes the gap
+            # by forcing a real corridor<->kitchen_laundry wall (>= ACCESS_DOOR_M),
+            # the same technique master/children use above. Two independent
+            # sweeps (plot-scaled and fixed-20x24-plot) proved this constraint is
+            # INFEASIBLE below ~184 m2 footprint and OPTIMAL at/above it on both
+            # feasible presets (gW_eN, gE_eN), with master's south daylight pin
+            # and children's center-cover untouched, and Living never on the
+            # kitchen's access-tree path.
+            sh = _share_wall(m, zv[circ], zv["kitchen_laundry"], door_u, "acc_kitchen")
+            m.Add(sh == 1)
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
     # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met
