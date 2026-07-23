@@ -31,6 +31,13 @@ COVERAGE_MIN = 0.95  # zones must tile at least this fraction of the footprint
 DEFAULT_MAX_ASPECT = 3.0  # fallback when neither Space nor standards gives one
 TARGET_AREA_TOLERANCE = 0.15  # sum(space targets) vs target_area_m2 mismatch warn
 
+# Tag prefix generate.py's fallback prepends to SolveResult.warnings (and, via
+# build_layout, Layout.warnings) when it had to drop the kitchen-direct
+# constraint below. validator.py's validate_plan checks for this same prefix
+# to allow the one authorized exception to its Living-off-kitchen-path gate —
+# a single source of truth so the two never drift apart.
+KITCHEN_FALLBACK_TAG = "kitchen-not-corridor-direct"
+
 
 def _u(meters: float) -> int:
     """Metres -> grid units, rounded to nearest cell."""
@@ -74,6 +81,12 @@ class SolveResult:
     # zone's (w,h) — constrained to a shape legal for THIS axis — always matches
     # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
     cut_sides: dict[str, str] = field(default_factory=dict)
+    # Whether the hard corridor<->kitchen_laundry wall (see the access block in
+    # _solve_once) was enforced on THIS solve. True means a feasible result is
+    # guaranteed corridor-direct by construction; False means generate.py's
+    # fallback dropped it because the footprint was too small (see
+    # KITCHEN_FALLBACK_TAG) and the plan may route the kitchen via dining/living.
+    kitchen_direct: bool = True
 
 
 class _ZoneVars:
@@ -332,6 +345,7 @@ def solve(
     seed: int = 0,
     time_limit_s: float = 12.0,
     workers: int = 8,
+    force_kitchen_direct: bool = True,
 ) -> SolveResult:
     """Solve, retrying once if a caller-supplied `avoid` edge makes it infeasible.
 
@@ -343,6 +357,14 @@ def solve(
     hard-fail the request: if the first attempt is infeasible and the caller
     actually supplied `avoid` edges (as opposed to us defaulting them), retry
     once with those edges dropped and warn.
+
+    `force_kitchen_direct` (default True) applies the hard corridor<->
+    kitchen_laundry wall (see _solve_once). generate.py's fallback passes
+    False for a second attempt when a first True attempt was infeasible —
+    solve() itself does not retry on this axis, unlike the avoid-drop above,
+    because dropping it silently would ship the exact through-living
+    pathology the constraint exists to prevent; the caller must opt in and
+    flag the result (KITCHEN_FALLBACK_TAG).
     """
     # Site setbacks (Task 5 Phase 4) are mapped in the fixed internal frame where
     # street = north and garden = south, i.e. orientation "N". Rather than
@@ -369,9 +391,13 @@ def solve(
 
     area_warnings = check_program_area(program)  # now measured on the reconciled program
 
-    result = _solve_once(program, preset, seed, time_limit_s, workers, avoid, desirable, semi)
+    result = _solve_once(
+        program, preset, seed, time_limit_s, workers, avoid, desirable, semi, force_kitchen_direct
+    )
     if not result.feasible and llm_avoid:
-        result = _solve_once(program, preset, seed, time_limit_s, workers, [], desirable, semi)
+        result = _solve_once(
+            program, preset, seed, time_limit_s, workers, [], desirable, semi, force_kitchen_direct
+        )
         result.warnings.append(
             f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
         )
@@ -388,6 +414,7 @@ def _solve_once(
     avoid_pairs: list,
     desirable_pairs: list,
     semi_pairs: list,
+    force_kitchen_direct: bool = True,
 ) -> SolveResult:
     spec = resolve(preset)
     W = _u(program.plot.width_m)
@@ -617,7 +644,7 @@ def _solve_once(
         elif "children" in zv:  # diagnostic path: plain disjunction, no Bathroom-direct guarantee
             _attach("children", [circ, "entry"], "acc_child")
         _attach("office", [circ, "entry", "living"], "acc_office")
-        if "kitchen_laundry" in zv:
+        if "kitchen_laundry" in zv and force_kitchen_direct:
             # Client-reported pathology: on undersized footprints the Kitchen was
             # only reachable via the Dining->Living chain (REQUIRED_ADJ), so
             # kitchen traffic routed through the living room. standards.py already
@@ -773,6 +800,7 @@ def _solve_once(
         plot_w_m=program.plot.width_m,
         plot_d_m=program.plot.depth_m,
         wall_time_s=solver.WallTime(),
+        kitchen_direct=force_kitchen_direct,
         footprint_m=footprint_m,
         cut_sides=cut_sides,
     )

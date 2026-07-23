@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from .models import Layout, Program
 from .presets import PRESETS
-from .solver import solve
+from .solver import KITCHEN_FALLBACK_TAG, solve
 from .slicer import build_layout
 from .svg import render
 from .validator import validate
@@ -74,7 +74,23 @@ def generate(
             res.attempted += 1
             sr = solve(program, preset, seed=seed, time_limit_s=time_limit_s, workers=workers)
             if not sr.feasible:
-                continue
+                # solver.py's kitchen-direct constraint (the hard corridor<->
+                # kitchen_laundry wall) can make an otherwise-buildable footprint
+                # infeasible when the plot is too small for the corridor to also
+                # reach the kitchen. Mirrors solve()'s own avoid-drop retry: try
+                # again with kitchen-direct off, and if THAT succeeds, ship it —
+                # visibly flagged as a real area limitation, never silently.
+                sr = solve(
+                    program, preset, seed=seed, time_limit_s=time_limit_s,
+                    workers=workers, force_kitchen_direct=False,
+                )
+                if not sr.feasible:
+                    continue
+                sr.warnings.append(
+                    f"{KITCHEN_FALLBACK_TAG}: footprint too small for the kitchen "
+                    "to reach circulation directly; routed via dining/living "
+                    "instead (area limitation, not a defect)"
+                )
             layout = build_layout(sr, program)
             v = validate(layout, program)
             if not v.ok:
@@ -84,7 +100,7 @@ def generate(
             if sig in seen:
                 continue
             seen.add(sig)
-            layout.warnings = v.warnings
+            layout.warnings = sr.warnings + v.warnings
             var = Variant(layout=layout, svg=render(layout), coverage=v.coverage)
             cur = best_per_preset.get(preset)
             if cur is None or layout.objective > cur.layout.objective:
