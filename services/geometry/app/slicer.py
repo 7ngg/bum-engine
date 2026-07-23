@@ -523,13 +523,39 @@ def _interior_wall_between(recs: list[_WallRec], a: int, b: int) -> _WallRec | N
     return best
 
 
+def _door_pos(lo: float, hi: float, width: float, jamb: float) -> float:
+    """Position (scalar along the span, orientation-agnostic) for a door of
+    `width` on a wall span [lo, hi]. A centered door splits the wall into two
+    stub runs, neither long enough for furniture (architect review, Task 7);
+    instead push the door's near jamb `jamb` clear of the lo-end corner, so
+    the swing tucks against that corner's perpendicular return wall and the
+    hi side keeps one continuous usable run. `jamb` is derived from the host
+    wall's own thickness_m (not a new constant) — a thicker wall's corner
+    return plausibly wants more clearance, and every wall run's endpoints are
+    real corners by construction (rasterised from cell-adjacency changes, see
+    module docstring), so "toward lo" always has a genuine perpendicular wall
+    to tuck against.
+
+    Deterministic: always offsets toward lo (not a per-call choice), so the
+    same layout always places the same door the same way.
+
+    Falls back to the midpoint when [lo, hi] is too short to fit jamb+width
+    without the door overflowing past hi — a short span has no usable run to
+    preserve either way, so there is nothing an offset would buy.
+    """
+    if hi - lo + geom.EPS < jamb + width:
+        return (lo + hi) / 2.0
+    return lo + jamb + width / 2.0
+
+
 def _door_on(rec: _WallRec, rooms: list[FinalRoom], frm: str, to: str) -> Door:
     e = rec.edge
     width = min(DOOR_W, max(0.7, e.length - 0.2))
+    pos = _door_pos(e.lo, e.hi, width, rec.wall.thickness_m)
     if e.orient == "V":
-        center = [e.fixed, e.mid]
+        center = [e.fixed, pos]
     else:
-        center = [e.mid, e.fixed]
+        center = [pos, e.fixed]
     return Door(**{"from": frm, "to": to, "wall_id": rec.wall.id, "center": center, "width_m": width, "height_m": DOOR_H})
 
 
