@@ -92,6 +92,13 @@ def generate(
                     "instead (area limitation, not a defect)"
                 )
             layout = build_layout(sr, program)
+            # Surface solver-level diagnostics (e.g. the kitchen-fallback tag)
+            # BEFORE validating: validate_plan's authorized-exception check
+            # reads layout.warnings, and validate() seeds its own warnings list
+            # from layout.warnings at call time — so this has to happen first,
+            # not after, or the fallback's own disclosure would be invisible to
+            # the gate it's meant to satisfy.
+            layout.warnings = sr.warnings + layout.warnings
             v = validate(layout, program)
             if not v.ok:
                 continue
@@ -100,7 +107,7 @@ def generate(
             if sig in seen:
                 continue
             seen.add(sig)
-            layout.warnings = sr.warnings + v.warnings
+            layout.warnings = v.warnings
             var = Variant(layout=layout, svg=render(layout), coverage=v.coverage)
             cur = best_per_preset.get(preset)
             if cur is None or layout.objective > cur.layout.objective:

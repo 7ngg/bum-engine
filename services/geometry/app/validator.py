@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from . import geom, standards
 from .models import Layout, Program
+from .solver import KITCHEN_FALLBACK_TAG
 
 # Absolute narrowest any room may be (the corridor/passage minimum). The
 # per-room Neufert minima (checked hard below) are stricter; this is the floor
@@ -291,6 +292,31 @@ def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
                 f"access graph: public room {names[child]!r} is entered from "
                 f"{names[parent]!r} (private/non-public) - social zone routed through a private room"
             )
+
+    # Kitchen-direct invariant (Task 6): Living must never be an ANCESTOR of
+    # Kitchen on the access tree — the client-reported pathology of kitchen
+    # traffic routed through the living room via the Dining->Living chain.
+    # _is_public's mirror rule above permits Kitchen<-Living (Living IS
+    # public), so that rule alone can't catch this; this asserts the
+    # stronger, kitchen-specific invariant directly. The one authorized
+    # exception is generate.py's flagged area-limitation fallback: when the
+    # footprint was too small for solver.py's kitchen-direct constraint, the
+    # caller already disclosed that via a KITCHEN_FALLBACK_TAG-prefixed
+    # warning, and shipping the plan visibly flagged beats shipping nothing.
+    if "Kitchen" in names and not any(w.startswith(KITCHEN_FALLBACK_TAG) for w in layout.warnings):
+        kidx = names.index("Kitchen")
+        if kidx in reached:
+            parent_of = {c: p for p, c in edges}
+            cur = kidx
+            while cur in parent_of:
+                cur = parent_of[cur]
+                if names[cur] == "Living":
+                    errors.append(
+                        "access graph: Kitchen is reached via Living (through-living "
+                        "routing) - kitchen must be corridor-direct unless flagged as "
+                        "an area limitation"
+                    )
+                    break
     return errors
 
 

@@ -7,9 +7,9 @@ import pytest
 from app import geom, standards
 from app.generate import generate
 from app.models import Layout
-from app.solver import solve
+from app.solver import KITCHEN_FALLBACK_TAG, solve
 from app.slicer import build_layout
-from app.validator import validate, validate_plan
+from app.validator import ACCESS_DOOR_M, validate, validate_plan
 
 
 @pytest.fixture(scope="module")
@@ -190,3 +190,84 @@ def test_validate_plan_rejects_bedroom_transit(layout, program):
     corridor.rect_m = [bath.rect_m[0], bath.rect_m[1] - 0.01, bath.rect_m[2], bath.rect_m[1]]
     errs = validate_plan(bad, program)
     assert any("unreachable" in e for e in errs), errs
+
+
+# --- kitchen-direct-to-corridor (Task 6) --------------------------------------
+# Client-reported pathology: the Kitchen was only reachable via the
+# Dining->Living chain, routing kitchen traffic through the living room. Fixed
+# by a hard corridor<->kitchen_laundry wall in solver.py, feasible on roomy
+# once its footprint moved to 184 m2 (two independent sweeps found that
+# threshold). These three tests cover: the invariant itself, that the
+# constraint (not the geometry) is what delivers it, and that a footprint too
+# small for it gets a disclosed fallback instead of a silently flawed plan.
+
+
+def _kitchen_ancestors(layout) -> list[str]:
+    from app.validator import access_tree
+
+    names = [rm.name for rm in layout.rooms]
+    edges, reached, _root = access_tree(layout.rooms)
+    kidx = names.index("Kitchen")
+    assert kidx in reached, "Kitchen must be reachable at all"
+    parent_of = {c: p for p, c in edges}
+    ancestors = []
+    cur = kidx
+    while cur in parent_of:
+        cur = parent_of[cur]
+        ancestors.append(names[cur])
+    return ancestors
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_kitchen_direct_to_corridor(program, preset):
+    # On roomy (184 m2), the hard constraint must deliver a REAL shared wall
+    # between Kitchen and Corridor, and Kitchen's access-tree path must never
+    # route through Living.
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    assert r.kitchen_direct
+    layout = build_layout(r, program)
+    rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    assert geom.adjacent(rooms["Kitchen"], rooms["Corridor"], ACCESS_DOOR_M), (
+        "Kitchen must share a real corridor wall"
+    )
+    ancestors = _kitchen_ancestors(layout)
+    assert "Living" not in ancestors, f"Kitchen routed through Living: {ancestors}"
+    assert validate_plan(layout, program) == []
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_kitchen_direct_constraint_is_load_bearing(program, preset):
+    # Proves the constraint (not a coincidence of the 184 m2 geometry) is what
+    # delivers kitchen-direct: with it OFF, UNFLAGGED (no disclosure -- unlike
+    # generate.py's fallback, which always appends KITCHEN_FALLBACK_TAG), the
+    # plan reverts to the Dining->Living chain and the gate must reject it.
+    # Stops a silent revert of the constraint later.
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1, force_kitchen_direct=False)
+    assert r.feasible, "dropping kitchen-direct should still solve on roomy"
+    assert not r.kitchen_direct
+    layout = build_layout(r, program)
+    ancestors = _kitchen_ancestors(layout)
+    assert "Living" in ancestors, (
+        f"expected the unconstrained solve to revert to routing via Living, got {ancestors}"
+    )
+    errors = validate_plan(layout, program)
+    assert any("Kitchen" in e and "Living" in e for e in errors), (
+        f"expected the kitchen-direct gate to reject the unflagged fallback, got {errors}"
+    )
+
+
+def test_kitchen_direct_fallback_flags_area_limitation(program):
+    # A footprint too small for kitchen-direct must not ship a flawed plan
+    # SILENTLY: generate.py retries without the constraint and flags the
+    # result. Uses 160 m2 (roomy's old target, proven infeasible for
+    # kitchen-direct by two independent sweeps), not the `program` fixture
+    # (now 184 m2, where kitchen-direct is feasible and no fallback fires).
+    small = program.model_copy(update={"footprint_target_m2": 160.0})
+    g = generate(small, n=2, seeds=[1])
+    assert len(g.variants) >= 1, "the fallback must still deliver a plan, not nothing"
+    for v in g.variants:
+        assert any(w.startswith(KITCHEN_FALLBACK_TAG) for w in v.layout.warnings), (
+            "fallback plan must carry the area-limitation diagnostic"
+        )
+        assert validate(v.layout, small).ok, "the flagged fallback must still pass the gate"
