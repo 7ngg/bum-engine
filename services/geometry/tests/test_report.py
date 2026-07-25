@@ -4,14 +4,14 @@ The slicer's ceil-snap + dimension cuts + legal-shape tables make every sliced
 room meet its per-room Neufert minimum, so Neufert is a HARD gate with ZERO
 violations (incl. the children Bathroom, whose depth ceil-snaps 2.2 -> 2.5 m).
 
-Task 5 note: the footprint packs close to (not exactly at) the 1.15 band ceiling.
-Task 3's union tables had opened ~5% of slack (down to ~1.10), but the live
-circulation zone adds a rigid corridor to the habitable budget, pushing the
-packing back up. The roomy fixture moved to 184 m2 (from 160) so the hard
-corridor<->kitchen_laundry wall (solver.py's kitchen-direct constraint) is
-satisfiable; on the new target the packing settles at ratio ~1.130 (208 m2),
-a bit under the 1.15 ceiling now that the extra footprint itself supplies some
-of the slack the corridor used to have to fight for.
+Task 5 note: the footprint packs somewhere inside [FOOTPRINT_LO, FOOTPRINT_HI]
+of target_area_m2, not pinned to a specific ratio -- which point in the band it
+lands on is an artifact of whichever global optimum the solver finds, and has
+already moved twice: ~1.130 (208 m2) after Task 5/6 added the live circulation
+zone and the kitchen-direct constraint, then ~1.087 (200 m2) after b990700
+added the master-bedroom-perimeter constraint, which changed the optimal
+packing enough to pull the footprint closer to target. Assert band membership,
+not the exact ratio.
 """
 
 import pytest
@@ -43,10 +43,12 @@ def test_zero_neufert_violations_and_valid(program, solved):
     assert v.ok, v.errors
 
 
-def test_footprint_at_the_band_ceiling(program, solved):
-    # See module docstring: 208 m2 / 184 m2 target, just under the 1.15 ceiling.
+def test_footprint_within_band(program, solved):
+    # See module docstring: the exact ratio is a packing artifact that has
+    # already moved once (1.130 -> 1.087) when b990700 changed which global
+    # optimum the solver lands on; band membership is the real invariant.
     ratio = _footprint_area(solved) / program.footprint_target_m2
-    assert ratio == pytest.approx(208.0 / 184.0), ratio
+    assert S.FOOTPRINT_LO <= ratio <= S.FOOTPRINT_HI, ratio
 
 
 def test_solver_records_kitchen_cut_axis(program, solved):

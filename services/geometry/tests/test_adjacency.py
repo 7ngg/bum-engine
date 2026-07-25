@@ -45,23 +45,30 @@ def test_empty_adjacency_reproduces_default_objective(raw_program, roomy_program
 
 def test_extra_desirable_pair_changes_objective(raw_program, roomy_program):
     program = roomy_program
-    # master_suite/office (neither required nor a default desirable/semi pair) is
-    # a REALIZABLE reward: on roomy gW_eN (184 m2, kitchen-direct constraint live
-    # — Task 6) the two zones happen to share a wall, so rewarding their adjacency
-    # is counted and the objective moves (+40, the desirable weight). NB the
-    # reward does NOT relocate zones: the hard access constraints pin the whole
-    # plan, so a soft desirable can only score a *coincidentally realized*
-    # adjacency, never pull two zones together (an audit found EVERY non-adjacent
-    # pair is a +0 no-op on this plot). That is why office/dining — the
-    # plausible-looking alternative — is the WRONG pair: office packs north,
-    # dining south, and no reward can move them, so it would be a silent no-op
-    # that never trips this assert. (Before Task 6 grew the fixture to 184 m2,
-    # office/children was the realized pair; the kitchen-direct constraint moved
-    # the packing enough that office/children no longer touch.)
+    # master_suite/children (neither required nor a default desirable/semi pair)
+    # is a REALIZABLE reward on the CURRENT roomy gW_eN packing (184 m2,
+    # b990700's master-bedroom-perimeter fix): the two zones happen to share a
+    # 3.0 m wall, so rewarding their adjacency is counted and the objective
+    # moves (+40, the desirable weight). NB the reward does NOT relocate zones:
+    # the hard access constraints pin the whole plan, so a soft desirable can
+    # only score a *coincidentally realized* adjacency, never pull two zones
+    # together (an audit found EVERY non-adjacent pair is a +0 no-op on this
+    # plot).
+    #
+    # THIS PAIR IS ILLUSTRATIVE, NOT LOAD-BEARING, AND WILL DRIFT AGAIN: it is
+    # whichever currently-touching, not-already-rewarded pair happens to be
+    # convenient, and every geometry-changing commit in this lineage has
+    # forced a different choice --
+    #   pre-Task-6 (160 m2):        office/children
+    #   Task 6 .. b990700 (208 m2): master_suite/office
+    #   b990700 onward (200 m2):    master_suite/children (this one)
+    # If this test fails after a future packing change, re-derive a realized
+    # pair the same way (audit non-required, non-default zone pairs for a
+    # real shared wall on the new geometry) rather than guessing.
     base = solve(program, "gW_eN", seed=1, time_limit_s=12, workers=1)
 
     augmented = copy.deepcopy(raw_program)
-    augmented["adjacency"]["desirable"].append(["master_suite", "office"])
+    augmented["adjacency"]["desirable"].append(["master_suite", "children"])
     prog2 = Program.model_validate(augmented)
     r2 = solve(prog2, "gW_eN", seed=1, time_limit_s=12, workers=1)
 
