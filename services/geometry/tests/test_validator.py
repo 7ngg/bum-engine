@@ -390,6 +390,75 @@ def test_master_bedroom_fix_validates_fully_green(program, preset):
     assert v.ok and v.errors == [], v.errors
 
 
+# --- window truth: windows only on the TRUE building perimeter --------------
+# The rasterizer's wall.exterior flag means "touches an unowned cell", which
+# includes an interior VOID cell, not just the outdoors. slicer._build_windows
+# now filters candidate walls to the TRUE footprint perimeter
+# (_true_perimeter_contact's bbox), so a room can no longer receive a window
+# that opens onto a sealed interior pocket.
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_no_window_faces_interior_void(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rects = [tuple(rm.rect_m) for rm in layout.rooms]
+    walls_by_id = {w.id: w for w in layout.walls}
+    fx0 = min(rc[0] for rc in rects)
+    fy0 = min(rc[1] for rc in rects)
+    fx1 = max(rc[2] for rc in rects)
+    fy1 = max(rc[3] for rc in rects)
+    for w in layout.windows:
+        wall = walls_by_id[w.wall_id]
+        x0, y0 = wall.start
+        x1, y1 = wall.end
+        on_perimeter = (
+            (abs(x0 - fx0) < geom.EPS and abs(x1 - fx0) < geom.EPS)
+            or (abs(x0 - fx1) < geom.EPS and abs(x1 - fx1) < geom.EPS)
+            or (abs(y0 - fy0) < geom.EPS and abs(y1 - fy0) < geom.EPS)
+            or (abs(y0 - fy1) < geom.EPS and abs(y1 - fy1) < geom.EPS)
+        )
+        assert on_perimeter, (
+            f"window in {w.room!r} sits on wall {w.wall_id!r} "
+            f"({wall.start} -> {wall.end}), which is not on the true "
+            f"footprint perimeter ({fx0},{fy0},{fx1},{fy1})"
+        )
+
+
+# --- requires_exterior_wall: its first executable reader ---------------------
+# standards.py declares requires_exterior_wall on 14 rooms; before this commit
+# nothing ever read it. This pins the same gate validator.py now enforces
+# (MIN_EXTERIOR_WALL_M = 1.5 m of TRUE footprint-perimeter wall) as a direct,
+# per-room assertion, independent of validate()'s aggregate ok/errors.
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_requires_exterior_wall_rooms_reach_true_perimeter(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rects = [tuple(rm.rect_m) for rm in layout.rooms]
+    for rm in layout.rooms:
+        spec = standards.ROOMS.get(rm.name)
+        if spec is None or not spec.requires_exterior_wall:
+            continue
+        facade = _true_perimeter_contact(tuple(rm.rect_m), rects)
+        assert facade >= 1.5, (
+            f"room {rm.name!r} requires an exterior wall but has only "
+            f"{facade:.2f} m of true building-perimeter wall (< 1.5 m)"
+        )
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_master_bedroom_still_has_window_after_window_truth_fix(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    n = len([w for w in layout.windows if w.room == "Master Bedroom"])
+    assert n >= 1, "Master Bedroom must still have a window after the window-truth fix"
+
+
 # --- KNOWN REGRESSION, documented not fixed: room-level Kitchen<->Dining -----
 # Measured (Step 2 sweep, /tmp/step2_corridor_any_side_habitable_perimeter.patch)
 # and confirmed again on this commit: at the roomy 184 m2 fixture, BOTH

@@ -9,6 +9,7 @@ issues surface as structured warnings. Rules (from the plan):
   - all rooms inside the plot
   - min dimensions met
   - coverage >= ~0.9
+  - requires_exterior_wall rooms reach the TRUE building perimeter (daylight)
 """
 
 from __future__ import annotations
@@ -31,6 +32,10 @@ MIN_DOOR_WALL = 0.8
 # small void that free-rectangle packing can't avoid — the space Task 3's
 # circulation will occupy.
 COVERAGE_MIN = 0.95
+# Geometric proxy for SNiP 2.08.01-89 / Posobie cl. 2.8's KEO >= 0.5% daylight
+# requirement -- NOT a KEO calculation. Consistent with the Master Bedroom
+# regression tests' threshold (tests/test_validator.py).
+MIN_EXTERIOR_WALL_M = 1.5
 MASTER_ROOMS = {"Master Bedroom", "Master Bathroom", "Walk-in Closet"}
 KITCHEN_ROOMS = {"Kitchen"}
 GARAGE_ROOMS = {"Garage"}
@@ -50,6 +55,24 @@ class ValidationResult:
 
 def _rooms_named(layout: Layout, names: set[str]) -> list[geom.Rect]:
     return [tuple(r.rect_m) for r in layout.rooms if r.name in names]
+
+
+def _true_perimeter_length(rect: geom.Rect, fx0: float, fy0: float, fx1: float, fy1: float) -> float:
+    """Facade length of `rect` against the TRUE building perimeter (the
+    footprint bbox), not the rasterizer's `exterior` wall flag -- that flag
+    also marks a wall facing an interior VOID as exterior, so it cannot be
+    used to prove a room actually reaches daylight."""
+    x0, y0, x1, y1 = rect
+    total = 0.0
+    if abs(y0 - fy0) < geom.EPS:
+        total += x1 - x0
+    if abs(y1 - fy1) < geom.EPS:
+        total += x1 - x0
+    if abs(x0 - fx0) < geom.EPS:
+        total += y1 - y0
+    if abs(x1 - fx1) < geom.EPS:
+        total += y1 - y0
+    return total
 
 
 def validate(layout: Layout, program: Program | None = None) -> ValidationResult:
@@ -134,6 +157,25 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
     # meets its per-room minimum, so a violation here is a real defect, not the
     # unavoidable sliver it was under Tasks 1-2.
     _check_neufert_standards(layout, errors)
+
+    # 8b. exterior-wall requirement (standards.py's requires_exterior_wall) —
+    # its first executable reader. A geometric proxy for SNiP 2.08.01-89 /
+    # Posobie cl. 2.8's KEO >= 0.5% daylight requirement (see
+    # MIN_EXTERIOR_WALL_M), not a KEO calculation. Measured against the TRUE
+    # footprint perimeter (_true_perimeter_length), not the rasterizer's
+    # `exterior` wall flag — that flag also marks a wall facing an interior
+    # VOID as exterior, which would let a landlocked room pass.
+    if rects:
+        for rm in layout.rooms:
+            spec = standards.ROOMS.get(rm.name)
+            if spec is None or not spec.requires_exterior_wall:
+                continue
+            facade = _true_perimeter_length(tuple(rm.rect_m), fx0, fy0, fx1, fy1)
+            if facade < MIN_EXTERIOR_WALL_M - geom.EPS:
+                errors.append(
+                    f"room {rm.name!r} requires an exterior wall but has only {facade:.2f} m "
+                    f"of true building-perimeter wall (< {MIN_EXTERIOR_WALL_M} m)"
+                )
 
     # 9. Access graph (Task 5 Phase 2): the plan must admit a legal, bedroom-free
     # access tree from the front door — the hard gate that turns "corridor exists"

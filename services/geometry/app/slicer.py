@@ -679,12 +679,29 @@ def _build_entry(rooms: list[FinalRoom], recs: list[_WallRec], warnings: list[st
 
 
 def _build_windows(rooms: list[FinalRoom], recs: list[_WallRec]) -> list[Window]:
+    # The rasterizer's wall.exterior flag means "touches an unowned cell",
+    # which includes an INTERIOR VOID cell, not just the outdoors -- a wall
+    # can be flagged exterior while facing a sealed pocket with no daylight.
+    # Windows may only go on the TRUE building perimeter: the footprint bbox
+    # (the same bounding box validator.py measures coverage against).
+    fx0 = min(rm.rect[0] for rm in rooms)
+    fy0 = min(rm.rect[1] for rm in rooms)
+    fx1 = max(rm.rect[2] for rm in rooms)
+    fy1 = max(rm.rect[3] for rm in rooms)
+
+    def _on_true_perimeter(edge: geom.Edge) -> bool:
+        if edge.orient == "V":
+            return abs(edge.fixed - fx0) < geom.EPS or abs(edge.fixed - fx1) < geom.EPS
+        return abs(edge.fixed - fy0) < geom.EPS or abs(edge.fixed - fy1) < geom.EPS
+
     windows: list[Window] = []
     for i, rm in enumerate(rooms):
         if rm.category not in WINDOW_CATEGORIES and rm.name not in WINDOW_ROOMS:
             continue
         for r in recs:
             if not r.wall.exterior or i not in (r.a, r.b):
+                continue
+            if not _on_true_perimeter(r.edge):
                 continue
             if r.edge.length < 1.2:
                 continue
