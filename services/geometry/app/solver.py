@@ -81,6 +81,11 @@ class SolveResult:
     # zone's (w,h) — constrained to a shape legal for THIS axis — always matches
     # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
     cut_sides: dict[str, str] = field(default_factory=dict)
+    # Side ("N"/"S"/"E"/"W") the corridor attached to a zone, read off the
+    # solver's own disjunction bools (see _force_vertical_overlap) instead of
+    # the slicer re-deriving it from geometry. Currently populated for
+    # master_suite only — the slicer must not assume any other key is present.
+    corridor_sides: dict[str, str] = field(default_factory=dict)
     # Whether the hard corridor<->kitchen_laundry wall (see the access block in
     # _solve_once) was enforced on THIS solve. True means a feasible result is
     # guaranteed corridor-direct by construction; False means generate.py's
@@ -250,7 +255,7 @@ def _tie_cut_axis(
 
 def _force_vertical_overlap(
     m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, min_overlap: int, tag: str
-) -> None:
+) -> dict[str, cp_model.IntVar]:
     """Force `corr` (corridor) adjacent to `zone` (master suite) on a vertical E/W
     wall whose y-overlap is >= `min_overlap`. Used with min_overlap = the north
     bath/closet strip's depth + a full door width: the strip is shorter than
@@ -262,7 +267,13 @@ def _force_vertical_overlap(
     ~0.5m, under ACCESS_DOOR_M, which access_tree can then refuse to award a
     door for. See the call site.) Same family as _force_vertical_cover_center;
     constrains only the overlap length (no y-pin) so it composes with the
-    children center-cover."""
+    children center-cover.
+
+    Returns the {"W": cW, "E": cE} disjunction bools, keyed by which side of
+    `zone` the corridor lands on, so a caller can read back the winning side
+    post-solve (same precedent as _tie_cut_axis / SolveResult.cut_sides) and
+    hand it to the slicer instead of the slicer re-deriving it from geometry.
+    """
     cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone
     cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone
     m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
@@ -273,6 +284,7 @@ def _force_vertical_overlap(
     m.AddMaxEquality(y_lo, [corr.y0, zone.y0])
     m.AddMinEquality(y_hi, [corr.y1, zone.y1])
     m.Add(y_hi - y_lo >= min_overlap)
+    return {"W": cW, "E": cE}
 
 
 def _force_vertical_cover_center(
@@ -591,6 +603,11 @@ def _solve_once(
     # kitchen/dining reach the backbone through the REQUIRED_ADJ chain to living.
     door_u = _ceil_u(Z.ACCESS_DOOR_M)
     circ: ZoneId = "circulation"
+    # Which side of a zone the corridor attached to, read back post-solve from
+    # the bools _force_vertical_overlap returns (see SolveResult.corridor_sides).
+    # Populated for master_suite only in this commit — the slicer must not read
+    # a value here for any other zone yet.
+    corridor_side_bools: dict[ZoneId, dict[str, cp_model.IntVar]] = {}
 
     def _attach(zone: ZoneId, targets: list[ZoneId], tag: str) -> None:
         opts = [
@@ -634,7 +651,9 @@ def _solve_once(
                 standards.ROOMS["Walk-in Closet"].min_h_m,
             ))
             mbed_u = service_u + door_u
-            _force_vertical_overlap(m, zv[circ], zv["master_suite"], mbed_u, "acc_master")
+            corridor_side_bools["master_suite"] = _force_vertical_overlap(
+                m, zv[circ], zv["master_suite"], mbed_u, "acc_master"
+            )
         if "children" in zv and _CHILD_CENTER_COVER:
             # children is NOT a plain attach: force the corridor to front the
             # central Bathroom band so the hall Bathroom is corridor-DIRECT (beds
@@ -764,6 +783,7 @@ def _solve_once(
     rects: list[ZoneRect] = []
     footprint_m: tuple[float, float, float, float] | None = None
     cut_sides: dict[str, str] = {}
+    corridor_sides: dict[str, str] = {}
     if feasible:
         for zid in present:
             v = zv[zid]
@@ -788,6 +808,12 @@ def _solve_once(
                 if solver.Value(bvar) == 1:
                     cut_sides[zid] = side
                     break
+        # which side the corridor attached to, for zones that recorded bools
+        for zid, bools in corridor_side_bools.items():
+            for side, bvar in bools.items():
+                if solver.Value(bvar) == 1:
+                    corridor_sides[zid] = side
+                    break
     human_obj = solver.ObjectiveValue() / plot_cells if feasible else float("-inf")
 
     return SolveResult(
@@ -803,4 +829,5 @@ def _solve_once(
         kitchen_direct=force_kitchen_direct,
         footprint_m=footprint_m,
         cut_sides=cut_sides,
+        corridor_sides=corridor_sides,
     )

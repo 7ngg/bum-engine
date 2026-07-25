@@ -98,14 +98,29 @@ def _side_of(r: geom.Rect, other: geom.Rect) -> str:
     return "N" if oy >= cy else "S"
 
 
-def _slice_master(r: ZoneRect) -> list[FinalRoom]:
+def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRoom]:
+    """corridor_side is the solver's SolveResult.corridor_sides["master_suite"]
+    ("N"/"S"/"E"/"W", or None if unrecorded/unattached) — which side of this
+    zone the corridor lands on (_force_vertical_overlap in solver.py). The
+    service strip (Bathroom | Closet) must NOT be the room that fronts the
+    corridor, else the corridor's forced overlap reaches only the ensuite/
+    closet and the Bedroom itself becomes unreachable.
+
+    Default cut: service strip NORTH, Bedroom the full-width SOUTH band. The
+    full-width Bedroom already touches BOTH the E and W walls, so an E or W
+    (or unrecorded/None) corridor already fronts it — no change needed there.
+    An S corridor touches the zone's y0 edge, which is the Bedroom's edge too
+    — also already correct. Only N flips: the corridor would otherwise front
+    the service strip's y1 edge, so the Bedroom moves to the NORTH band and
+    the service strip to the SOUTH.
+    """
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
     mbath = standards.ROOMS["Master Bathroom"]
     wic = standards.ROOMS["Walk-in Closet"]
     mbed = standards.ROOMS["Master Bedroom"]
-    # North service strip (Bathroom | Closet) deep enough for both; Bedroom below
-    # takes ALL surplus depth. Bathroom gets its min width; Closet takes the rest.
+    # Service strip (Bathroom | Closet) deep enough for both; Bedroom takes ALL
+    # surplus depth. Bathroom gets its min width; Closet takes the rest.
     service = _ceil_snap(max(mbath.min_h_m, wic.min_h_m))  # min-carrying -> ceil
     bath_w = _ceil_snap(mbath.min_w_m)                     # min-carrying -> ceil
     if (
@@ -114,8 +129,15 @@ def _slice_master(r: ZoneRect) -> list[FinalRoom]:
         or (w - bath_w) < wic.min_w_m
     ):
         return [FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, y1))]
-    sy = y1 - service  # position: aligned edge - aligned dim, no snap needed
     mid = x0 + bath_w
+    if corridor_side == "N":
+        sy = y0 + service  # service strip SOUTH, Bedroom the NORTH band
+        return [
+            FinalRoom("Master Bathroom", "wet", r.zone, (x0, y0, mid, sy)),
+            FinalRoom("Walk-in Closet", "private", r.zone, (mid, y0, x1, sy)),
+            FinalRoom("Master Bedroom", "private", r.zone, (x0, sy, x1, y1)),
+        ]
+    sy = y1 - service  # position: aligned edge - aligned dim, no snap needed
     return [
         FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, sy)),
         FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy, mid, y1)),
@@ -259,11 +281,13 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
     entry_side = None
     if "entry" in by_zone and garage is not None:
         entry_side = _side_of(tuple(by_zone["entry"].rect_m), tuple(garage.rect_m))
+    corridor_sides = getattr(result, "corridor_sides", {}) or {}
+    master_corridor_side = corridor_sides.get("master_suite")
     rooms: list[FinalRoom] = []
     for zr in result.rects:
         z = zr.zone
         if z == "master_suite":
-            rooms += _slice_master(zr)
+            rooms += _slice_master(zr, master_corridor_side)
         elif z == "children":
             rooms += _slice_children(zr)
         elif z == "kitchen_laundry":

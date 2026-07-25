@@ -271,3 +271,26 @@ def test_kitchen_direct_fallback_flags_area_limitation(program):
             "fallback plan must carry the area-limitation diagnostic"
         )
         assert validate(v.layout, small).ok, "the flagged fallback must still pass the gate"
+
+
+# --- corridor-to-Master-Bedroom, room level (Step 1 of the master-window fix) -
+# The solver only guarantees a ZONE-level corridor<->master_suite touch
+# (_force_vertical_overlap); which SUB-ROOM receives it is the slicer's call.
+# _slice_master now reads the solver's recorded corridor_sides["master_suite"]
+# so the Bedroom (not just the Bathroom/Closet service strip) is always the
+# room that fronts the corridor. This must hold at the ROOM level, not just
+# "some master-suite room touches the corridor" — a plan where the corridor
+# only fronts the Master Bathroom or Walk-in Closet leaves the Bedroom itself
+# unreachable and must fail this test.
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_master_bedroom_direct_to_corridor(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    assert geom.adjacent(rooms["Corridor"], rooms["Master Bedroom"], ACCESS_DOOR_M), (
+        "Corridor must share a real wall with Master Bedroom specifically, "
+        "not merely with some room in the master suite"
+    )
