@@ -82,9 +82,10 @@ class SolveResult:
     # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
     cut_sides: dict[str, str] = field(default_factory=dict)
     # Side ("N"/"S"/"E"/"W") the corridor attached to a zone, read off the
-    # solver's own disjunction bools (see _force_vertical_overlap) instead of
-    # the slicer re-deriving it from geometry. Currently populated for
-    # master_suite only — the slicer must not assume any other key is present.
+    # solver's own disjunction bools (_force_vertical_overlap for master_suite,
+    # _share_wall's side_bools for kitchen_laundry) instead of the slicer
+    # re-deriving it from geometry. Populated for master_suite and
+    # kitchen_laundry only — the slicer must not assume any other key is present.
     corridor_sides: dict[str, str] = field(default_factory=dict)
     # Whether the hard corridor<->kitchen_laundry wall (see the access block in
     # _solve_once) was enforced on THIS solve. True means a feasible result is
@@ -152,7 +153,12 @@ def _apply_pins(m: cp_model.CpModel, zv: _ZoneVars, pins: Pins, fp: _Footprint) 
 
 
 def _share_wall(
-    m: cp_model.CpModel, a: _ZoneVars, b: _ZoneVars, min_len: int, tag: str
+    m: cp_model.CpModel,
+    a: _ZoneVars,
+    b: _ZoneVars,
+    min_len: int,
+    tag: str,
+    side_bools: dict[str, cp_model.IntVar] | None = None,
 ) -> cp_model.IntVar:
     """Reified boolean: true => a and b share a wall segment >= min_len units.
 
@@ -160,6 +166,12 @@ def _share_wall(
     (share -> real adjacency); the solver only sets it true when it can realise
     a config, which forces a genuine shared wall. Good enough for both a hard
     requirement (force share == 1) and a soft reward (reward only if realised).
+
+    If `side_bools` is given, it is populated with the four directional bools
+    keyed by the side of `b` that `a` occupies ("W"/"E"/"S"/"N") — same shape
+    as _tie_cut_axis's return — so a caller can read back post-solve which
+    config was actually realised (see SolveResult.corridor_sides) without
+    changing the constraint itself or any other caller's return contract.
     """
     y_lo = m.NewIntVar(0, 10_000, f"{tag}_ylo")
     y_hi = m.NewIntVar(0, 10_000, f"{tag}_yhi")
@@ -176,21 +188,29 @@ def _share_wall(
     m.Add(a.x1 == b.x0).OnlyEnforceIf(c)
     m.Add(y_hi - y_lo >= min_len).OnlyEnforceIf(c)
     configs.append(c)
+    if side_bools is not None:
+        side_bools["W"] = c
     # a east of b: b.x1 == a.x0
     c = m.NewBoolVar(f"{tag}_aEb")
     m.Add(b.x1 == a.x0).OnlyEnforceIf(c)
     m.Add(y_hi - y_lo >= min_len).OnlyEnforceIf(c)
     configs.append(c)
+    if side_bools is not None:
+        side_bools["E"] = c
     # a south of b: a.y1 == b.y0, horizontal wall, x-overlap >= min_len
     c = m.NewBoolVar(f"{tag}_aSb")
     m.Add(a.y1 == b.y0).OnlyEnforceIf(c)
     m.Add(x_hi - x_lo >= min_len).OnlyEnforceIf(c)
     configs.append(c)
+    if side_bools is not None:
+        side_bools["S"] = c
     # a north of b: b.y1 == a.y0
     c = m.NewBoolVar(f"{tag}_aNb")
     m.Add(b.y1 == a.y0).OnlyEnforceIf(c)
     m.Add(x_hi - x_lo >= min_len).OnlyEnforceIf(c)
     configs.append(c)
+    if side_bools is not None:
+        side_bools["N"] = c
 
     share = m.NewBoolVar(f"{tag}_share")
     # share == OR(configs)
@@ -604,9 +624,9 @@ def _solve_once(
     door_u = _ceil_u(Z.ACCESS_DOOR_M)
     circ: ZoneId = "circulation"
     # Which side of a zone the corridor attached to, read back post-solve from
-    # the bools _force_vertical_overlap returns (see SolveResult.corridor_sides).
-    # Populated for master_suite only in this commit — the slicer must not read
-    # a value here for any other zone yet.
+    # the bools _force_vertical_overlap / _share_wall(..., side_bools=...) return
+    # (see SolveResult.corridor_sides). Populated for master_suite and
+    # kitchen_laundry.
     corridor_side_bools: dict[ZoneId, dict[str, cp_model.IntVar]] = {}
 
     def _attach(zone: ZoneId, targets: list[ZoneId], tag: str) -> None:
@@ -675,8 +695,12 @@ def _solve_once(
             # feasible presets (gW_eN, gE_eN), with master's south daylight pin
             # and children's center-cover untouched, and Living never on the
             # kitchen's access-tree path.
-            sh = _share_wall(m, zv[circ], zv["kitchen_laundry"], door_u, "acc_kitchen")
+            kl_corridor_bools: dict[str, cp_model.IntVar] = {}
+            sh = _share_wall(
+                m, zv[circ], zv["kitchen_laundry"], door_u, "acc_kitchen", kl_corridor_bools
+            )
             m.Add(sh == 1)
+            corridor_side_bools["kitchen_laundry"] = kl_corridor_bools
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
     # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met

@@ -294,3 +294,28 @@ def test_master_bedroom_direct_to_corridor(program, preset):
         "Corridor must share a real wall with Master Bedroom specifically, "
         "not merely with some room in the master suite"
     )
+
+
+# --- corridor-to-Kitchen, room level (Step 1b of the master-window fix) ------
+# Same gap as master_suite, still open for kitchen_laundry until this commit:
+# the solver only guarantees a ZONE-level corridor<->kitchen_laundry touch (the
+# force_kitchen_direct block in solver.py); which SUB-ROOM receives it is the
+# slicer's call. At footprint 208 on the (pre-fix) roomy fixture this already
+# shipped broken -- the forced touch landed on the Laundry sub-room, and
+# validate_plan rejected the plan with "Kitchen is reached via Living". This
+# test pins the room-level guarantee at 184 (where it happens to already hold)
+# so it can't silently regress, and the 208 case is covered directly by
+# tests/test_slicer.py's same-axis-override unit test since roomy's fixture
+# footprint is 184, not 208.
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_kitchen_direct_to_corridor_room_level(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    assert geom.adjacent(rooms["Corridor"], rooms["Kitchen"], ACCESS_DOOR_M), (
+        "Corridor must share a real wall with Kitchen specifically, "
+        "not merely with some room in the kitchen_laundry zone (e.g. Laundry)"
+    )

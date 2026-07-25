@@ -169,24 +169,43 @@ def _slice_children(r: ZoneRect) -> list[FinalRoom]:
     ]
 
 
-def _slice_kitchen(r: ZoneRect, side: str | None) -> list[FinalRoom]:
+def _slice_kitchen(
+    r: ZoneRect, side: str | None, corridor_side: str | None = None
+) -> list[FinalRoom]:
     # `side` is the direction of Dining, DECIDED BY THE SOLVER (result.cut_sides)
-    # and read here — not re-derived from _side_of. The solver constrained the
-    # zone's (w, h) to a shape legal for the cut on this axis (legal_pairs), so
-    # the slice below is guaranteed legal.
+    # and read here — not re-derived from _side_of. It ALSO fixes which AXIS the
+    # zone was cut on (N/S vs W/E): the solver constrained the zone's (w, h) to a
+    # shape legal for THIS axis (legal_pairs), so the axis itself must stay
+    # `side`-derived, never flipped by corridor_side below.
+    #
+    # `corridor_side` is a SEPARATE signal (result.corridor_sides["kitchen_laundry"]):
+    # which side the corridor attached to. When it lands on the SAME axis as the
+    # cut, the corridor's shared wall sits on exactly one sub-room's edge (just
+    # like the N/S dining split does), so Kitchen goes there instead of wherever
+    # Dining would put it — Kitchen must be corridor-direct, and this doesn't
+    # touch kitchen_laundry<->dining (a ZONE-level required adjacency, unaffected
+    # by which sub-room sits where). When corridor_side is on the ORTHOGONAL
+    # axis (or absent), both sub-rooms already span that whole edge under either
+    # cut, so which one the corridor's overlap actually lands on is a matter of
+    # exact position, not order — not something reordering can fix — so we fall
+    # through to the dining placement unchanged.
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
     kitchen = standards.ROOMS["Kitchen"]
     laundry = standards.ROOMS["Laundry"]
     if side is None:
         return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
+    axis_ns = side in ("N", "S")
+    place_side = side
+    if corridor_side is not None and (corridor_side in ("N", "S")) == axis_ns:
+        place_side = corridor_side
     # Laundry gets its min strip (ceil-snapped) on the cut axis; Kitchen keeps
-    # the dining side and takes ALL the surplus. No magic fraction.
-    if side in ("N", "S"):
+    # the `place_side` edge and takes ALL the surplus. No magic fraction.
+    if axis_ns:
         depth = _ceil_snap(laundry.min_h_m)  # Laundry Y-depth
         if (h - depth) < kitchen.min_h_m or w < max(kitchen.min_w_m, laundry.min_w_m):
             return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
-        if side == "S":  # dining south -> kitchen south, laundry north
+        if place_side == "S":  # kitchen south, laundry north
             ky = y1 - depth
             return [
                 FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, ky)),
@@ -200,7 +219,7 @@ def _slice_kitchen(r: ZoneRect, side: str | None) -> list[FinalRoom]:
     depth = _ceil_snap(laundry.min_w_m)  # Laundry X-depth
     if (w - depth) < kitchen.min_w_m or h < max(kitchen.min_h_m, laundry.min_h_m):
         return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
-    if side == "W":  # dining west -> kitchen west, laundry east
+    if place_side == "W":  # kitchen west, laundry east
         kx = x1 - depth
         return [
             FinalRoom("Kitchen", "wet", r.zone, (x0, y0, kx, y1)),
@@ -283,6 +302,7 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
         entry_side = _side_of(tuple(by_zone["entry"].rect_m), tuple(garage.rect_m))
     corridor_sides = getattr(result, "corridor_sides", {}) or {}
     master_corridor_side = corridor_sides.get("master_suite")
+    kl_corridor_side = corridor_sides.get("kitchen_laundry")
     rooms: list[FinalRoom] = []
     for zr in result.rects:
         z = zr.zone
@@ -291,7 +311,7 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
         elif z == "children":
             rooms += _slice_children(zr)
         elif z == "kitchen_laundry":
-            rooms += _slice_kitchen(zr, kl_side)
+            rooms += _slice_kitchen(zr, kl_side, kl_corridor_side)
         elif z == "entry":
             rooms += _slice_entry(zr, entry_side)
         elif z in _SIMPLE_NAME:
