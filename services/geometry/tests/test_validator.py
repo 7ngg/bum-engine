@@ -319,3 +319,108 @@ def test_kitchen_direct_to_corridor_room_level(program, preset):
         "Corridor must share a real wall with Kitchen specifically, "
         "not merely with some room in the kitchen_laundry zone (e.g. Laundry)"
     )
+
+
+# --- Master Bedroom exterior wall + window (the master-bedroom-window fix) ---
+# Prior commits (5da1490, 66f3506) guaranteed the corridor fronts the Master
+# BEDROOM room, not just the master_suite zone or its service strip -- but
+# left the Bedroom itself with no guarantee of ever reaching a real exterior
+# wall. On the roomy 184 m2 plan the Bedroom was fully landlocked (no window
+# -> SNiP/Posobie cl. 2.8 daylight violation, architect-confirmed). This
+# commit makes the master corridor attachment a 4-way disjunction (any side,
+# not just E/W) and adds a bedroom-AWARE habitable-perimeter constraint for
+# master_suite only (see _force_master_corridor_overlap /
+# _require_master_bedroom_perimeter in solver.py), so the Bedroom's exterior
+# wall is a CONSTRAINT, not left to the objective's taste.
+#
+# test_master_bedroom_direct_to_corridor above already covers "Corridor
+# shares >= ACCESS_DOOR_M with Master Bedroom, room-to-room" -- one of the
+# four guarantees this commit buys is already guarded by that existing test,
+# so it is not duplicated here.
+
+
+def _true_perimeter_contact(rect: geom.Rect, all_rooms: list[geom.Rect]) -> float:
+    """Facade length of `rect` against the TRUE building perimeter (the
+    bounding box of every room), not the rasterized wall.exterior flag -- a
+    rasterized "exterior" wall can face an interior void the slicer didn't
+    assign, which is not a real facade."""
+    fx0 = min(r[0] for r in all_rooms)
+    fy0 = min(r[1] for r in all_rooms)
+    fx1 = max(r[2] for r in all_rooms)
+    fy1 = max(r[3] for r in all_rooms)
+    x0, y0, x1, y1 = rect
+    total = 0.0
+    if abs(y0 - fy0) < geom.EPS:
+        total += x1 - x0
+    if abs(y1 - fy1) < geom.EPS:
+        total += x1 - x0
+    if abs(x0 - fx0) < geom.EPS:
+        total += y1 - y0
+    if abs(x1 - fx1) < geom.EPS:
+        total += y1 - y0
+    return total
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_master_bedroom_has_true_perimeter_facade(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rects = [tuple(rm.rect_m) for rm in layout.rooms]
+    mb = next(tuple(rm.rect_m) for rm in layout.rooms if rm.name == "Master Bedroom")
+    facade = _true_perimeter_contact(mb, rects)
+    assert facade >= 1.5, f"Master Bedroom must have a real exterior wall, got {facade:.2f} m"
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_master_bedroom_has_window(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    n = len([w for w in layout.windows if w.room == "Master Bedroom"])
+    assert n >= 1, "Master Bedroom must have at least one window"
+
+
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_master_bedroom_fix_validates_fully_green(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    v = validate(layout, program)
+    assert v.ok and v.errors == [], v.errors
+
+
+# --- KNOWN REGRESSION, documented not fixed: room-level Kitchen<->Dining -----
+# Measured (Step 2 sweep, /tmp/step2_corridor_any_side_habitable_perimeter.patch)
+# and confirmed again on this commit: at the roomy 184 m2 fixture, BOTH
+# presets, Kitchen and Dining no longer share a wall at the room level --
+# Laundry sits between them (a 2.0 m gap). Root cause: 66f3506 made
+# _slice_kitchen let the corridor-facing side win over the dining-facing side
+# when the two conflict; this commit's repacking (the corridor is now free to
+# front master_suite from the north) changes kitchen_laundry's own corridor
+# side into conflict with its dining side at 184, where before this commit it
+# wasn't. REQUIRED_ADJ (kitchen_laundry<->dining) is enforced at the ZONE
+# level only, so validate() cannot see this and reports fully green anyway.
+# Not fixed here -- see the commit message. This xfail exists so the
+# regression is VISIBLE in the suite, not silently absent. If this
+# unexpectedly passes, strict xfail turns that into a failure -- report it
+# immediately, it would mean the regression did not materialise here.
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN REGRESSION (master-bedroom-window fix): Kitchen<->Dining no "
+        "longer share a wall at the room level on the roomy 184 m2 fixture -- "
+        "Laundry sits between them. REQUIRED_ADJ is zone-level only so "
+        "validate() doesn't catch it. Not fixed by this commit; see its "
+        "message for the measured gap."
+    ),
+)
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_kitchen_dining_room_level_KNOWN_REGRESSION(program, preset):
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    assert geom.adjacent(rooms["Kitchen"], rooms["Dining"], ACCESS_DOOR_M), (
+        "Kitchen must share a real wall with Dining at the room level"
+    )

@@ -49,7 +49,7 @@ def resolve(name: str) -> PresetSpec:
         # to also reach the master's south bedroom, so the suite could only be
         # entered through the living room (a SNiP privacy violation). Trading the
         # garden-edge for a corridor wall lets the private suite open off
-        # circulation. See solver._force_vertical_overlap.
+        # circulation. See solver._force_master_corridor_overlap.
         "master_suite": Pins(max_y1_frac=0.62),
         # Garage on the street (north) edge and one side.
         "garage": Pins(north=True, west=(garage_side == "W"), east=(garage_side == "E")),

@@ -101,7 +101,7 @@ def _side_of(r: geom.Rect, other: geom.Rect) -> str:
 def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRoom]:
     """corridor_side is the solver's SolveResult.corridor_sides["master_suite"]
     ("N"/"S"/"E"/"W", or None if unrecorded/unattached) — which side of this
-    zone the corridor lands on (_force_vertical_overlap in solver.py). The
+    zone the corridor lands on (_force_master_corridor_overlap in solver.py). The
     service strip (Bathroom | Closet) must NOT be the room that fronts the
     corridor, else the corridor's forced overlap reaches only the ensuite/
     closet and the Bedroom itself becomes unreachable.

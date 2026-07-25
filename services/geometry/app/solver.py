@@ -82,8 +82,8 @@ class SolveResult:
     # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
     cut_sides: dict[str, str] = field(default_factory=dict)
     # Side ("N"/"S"/"E"/"W") the corridor attached to a zone, read off the
-    # solver's own disjunction bools (_force_vertical_overlap for master_suite,
-    # _share_wall's side_bools for kitchen_laundry) instead of the slicer
+    # solver's own disjunction bools (_force_master_corridor_overlap for
+    # master_suite, _share_wall's side_bools for kitchen_laundry) instead of the slicer
     # re-deriving it from geometry. Populated for master_suite and
     # kitchen_laundry only — the slicer must not assume any other key is present.
     corridor_sides: dict[str, str] = field(default_factory=dict)
@@ -273,38 +273,121 @@ def _tie_cut_axis(
     return {"E": bE, "W": bW, "N": bN, "S": bS}
 
 
-def _force_vertical_overlap(
-    m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, min_overlap: int, tag: str
+def _force_master_corridor_overlap(
+    m: cp_model.CpModel,
+    corr: _ZoneVars,
+    zone: _ZoneVars,
+    ew_overlap: int,
+    ns_overlap: int,
+    tag: str,
 ) -> dict[str, cp_model.IntVar]:
-    """Force `corr` (corridor) adjacent to `zone` (master suite) on a vertical E/W
-    wall whose y-overlap is >= `min_overlap`. Used with min_overlap = the north
-    bath/closet strip's depth + a full door width: the strip is shorter than
-    that, so an overlap this long CANNOT sit entirely in the strip — it must
-    reach the south Bedroom band by at least a door width, giving the BEDROOM
-    (not just the ensuite) a real, door-worthy corridor wall so the private
-    suite is entered from circulation, never through the living room. (Do not
-    pass just the Bedroom's own min depth here — it clears the strip by only
-    ~0.5m, under ACCESS_DOOR_M, which access_tree can then refuse to award a
-    door for. See the call site.) Same family as _force_vertical_cover_center;
-    constrains only the overlap length (no y-pin) so it composes with the
-    children center-cover.
+    """Force `corr` (corridor) adjacent to `zone` (master suite) on ANY of its
+    four sides — a reified disjunction, not a fixed E/W pair — with per-side
+    overlap semantics so each side's floor is exactly as long as it needs to
+    be to guarantee a genuine Bedroom-facing wall, not just an ensuite/closet
+    touch:
 
-    Returns the {"W": cW, "E": cE} disjunction bools, keyed by which side of
-    `zone` the corridor lands on, so a caller can read back the winning side
-    post-solve (same precedent as _tie_cut_axis / SolveResult.cut_sides) and
-    hand it to the slicer instead of the slicer re-deriving it from geometry.
+    E/W: vertical wall, y-overlap >= `ew_overlap` (~ the north bath/closet
+    strip's depth + a full door width). The strip is shorter than that, so an
+    overlap this long CANNOT sit entirely in the strip — it must reach the
+    Bedroom band by at least a door width. (Do not pass just the Bedroom's own
+    min depth here — it clears the strip by only ~0.5m, under ACCESS_DOOR_M,
+    which access_tree can then refuse to award a door for. See the call site.)
+
+    N/S: horizontal wall, x-overlap >= `ns_overlap` (~ACCESS_DOOR_M only). On
+    these sides _slice_master (5da1490) makes the Bedroom the FULL-WIDTH band
+    facing the corridor (flipped to the north band for "N"; already the south
+    band for "S"), so there is no strip to clear — any door-width overlap
+    already lands entirely on the Bedroom.
+
+    Same family as _force_vertical_cover_center; constrains only overlap
+    length (no pin) so it composes with the children center-cover.
+
+    Returns the {"E","W","N","S"} disjunction bools so a caller can read back
+    the winning side post-solve (same precedent as _tie_cut_axis /
+    SolveResult.cut_sides) and hand it to the slicer instead of the slicer
+    re-deriving it from geometry.
     """
-    cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone
-    cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone
-    m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
-    m.Add(zone.x1 == corr.x0).OnlyEnforceIf(cE)
-    m.AddBoolOr([cW, cE])
     y_lo = m.NewIntVar(0, 10_000, f"{tag}_ylo")
     y_hi = m.NewIntVar(0, 10_000, f"{tag}_yhi")
     m.AddMaxEquality(y_lo, [corr.y0, zone.y0])
     m.AddMinEquality(y_hi, [corr.y1, zone.y1])
-    m.Add(y_hi - y_lo >= min_overlap)
-    return {"W": cW, "E": cE}
+    x_lo = m.NewIntVar(0, 10_000, f"{tag}_xlo")
+    x_hi = m.NewIntVar(0, 10_000, f"{tag}_xhi")
+    m.AddMaxEquality(x_lo, [corr.x0, zone.x0])
+    m.AddMinEquality(x_hi, [corr.x1, zone.x1])
+
+    bE = m.NewBoolVar(f"{tag}_bE")  # corridor east of zone: corr.x0 == zone.x1
+    m.Add(corr.x0 == zone.x1).OnlyEnforceIf(bE)
+    m.Add(y_hi - y_lo >= ew_overlap).OnlyEnforceIf(bE)
+    bW = m.NewBoolVar(f"{tag}_bW")  # corridor west of zone: corr.x1 == zone.x0
+    m.Add(corr.x1 == zone.x0).OnlyEnforceIf(bW)
+    m.Add(y_hi - y_lo >= ew_overlap).OnlyEnforceIf(bW)
+    bN = m.NewBoolVar(f"{tag}_bN")  # corridor north of zone: corr.y0 == zone.y1
+    m.Add(corr.y0 == zone.y1).OnlyEnforceIf(bN)
+    m.Add(x_hi - x_lo >= ns_overlap).OnlyEnforceIf(bN)
+    bS = m.NewBoolVar(f"{tag}_bS")  # corridor south of zone: corr.y1 == zone.y0
+    m.Add(corr.y1 == zone.y0).OnlyEnforceIf(bS)
+    m.Add(x_hi - x_lo >= ns_overlap).OnlyEnforceIf(bS)
+
+    m.AddBoolOr([bE, bW, bN, bS])
+    return {"E": bE, "W": bW, "N": bN, "S": bS}
+
+
+def _require_master_bedroom_perimeter(
+    m: cp_model.CpModel,
+    zone: _ZoneVars,
+    fp: _Footprint,
+    side_bools: dict[str, cp_model.IntVar],
+    tag: str,
+) -> None:
+    """Bedroom-AWARE habitable-perimeter guarantee for master_suite: the
+    Master Bedroom must have a real exterior wall (SNiP/Posobie cl. 2.8, KEO
+    >= 0.5% — a bedroom with no daylight is a code violation), and that
+    guarantee must be a CONSTRAINT, not an accident of the objective (measured
+    in Step 2: master_suite got a facade "for free" under
+    _force_master_corridor_overlap alone, but only because the objective
+    happened to prefer it — nothing forced it).
+
+    A plain zone-level perimeter check (zone touches the footprint on SOME
+    edge) is NOT sufficient: with the corridor north, the zone's north edge
+    already touches the corridor and its only OTHER footprint contact could
+    be the south service strip's edge — a check that isn't aware of which
+    room is on which side would pass while the Bedroom itself stays
+    landlocked. This ties the required facade edge to whichever face the
+    Bedroom actually occupies GIVEN which side won the corridor disjunction
+    (side_bools, from _force_master_corridor_overlap):
+      bN/bS -> the Bedroom is the full-width band on that same side (N: the
+               _slice_master flip puts it north; S: already the south band)
+               -- so its only possible exterior faces are the zone's WEST or
+               EAST edge (its N/S edges are the corridor and the service
+               strip, neither exterior).
+      bE/bW -> the Bedroom is the (unflipped) south band, and the corridor
+               already claims the E or W face respectively -- so its only
+               possible exterior faces are the zone's SOUTH edge, or whichever
+               of WEST/EAST the corridor did NOT claim.
+    One-directional implications (side_bool -> facade-OR), same idiom as the
+    rest of this file: the solver may only set a facade bool True when the
+    equality is achievable, so this can never be satisfied by a lie.
+
+    Deliberately NOT applied to living/children/office/kitchen_laundry: Step 2
+    measured that adding the same plain zone-level requirement to all four
+    reshuffles the packing enough to strand Bedroom 3/Garage from the access
+    tree and reopen the kitchen-direct regression, at every footprint tried.
+    Master_suite only.
+    """
+    west = m.NewBoolVar(f"{tag}_west")
+    m.Add(zone.x0 == fp.x0).OnlyEnforceIf(west)
+    east = m.NewBoolVar(f"{tag}_east")
+    m.Add(zone.x1 == fp.x1).OnlyEnforceIf(east)
+    south = m.NewBoolVar(f"{tag}_south")
+    m.Add(zone.y0 == fp.y0).OnlyEnforceIf(south)
+
+    bN, bS, bE, bW = side_bools["N"], side_bools["S"], side_bools["E"], side_bools["W"]
+    m.AddBoolOr([west, east, bN.Not()])
+    m.AddBoolOr([west, east, bS.Not()])
+    m.AddBoolOr([south, west, bE.Not()])
+    m.AddBoolOr([south, east, bW.Not()])
 
 
 def _force_vertical_cover_center(
@@ -624,7 +707,7 @@ def _solve_once(
     door_u = _ceil_u(Z.ACCESS_DOOR_M)
     circ: ZoneId = "circulation"
     # Which side of a zone the corridor attached to, read back post-solve from
-    # the bools _force_vertical_overlap / _share_wall(..., side_bools=...) return
+    # the bools _force_master_corridor_overlap / _share_wall(..., side_bools=...) return
     # (see SolveResult.corridor_sides). Populated for master_suite and
     # kitchen_laundry.
     corridor_side_bools: dict[ZoneId, dict[str, cp_model.IntVar]] = {}
@@ -644,35 +727,43 @@ def _solve_once(
         _attach("living", [circ, "entry"], "acc_living")      # backbone
         _attach("garage", ["entry", circ], "acc_garage")
         if "master_suite" in zv:
-            # master is NOT a plain attach: force the corridor to front the SOUTH
-            # Bedroom band, past the north Bathroom|Closet service strip, so the
-            # private suite is entered from circulation, never through the living
-            # room (the SNiP violation the render caught). Same family as the
-            # children center-cover.
+            # master is NOT a plain attach: force the corridor to front the
+            # Bedroom band (whichever side wins — see
+            # _force_master_corridor_overlap), past the Bathroom|Closet
+            # service strip, so the private suite is entered from
+            # circulation, never through the living room (the SNiP violation
+            # the render caught). Same family as the children center-cover.
             #
-            # The overlap floor must clear the service strip by a FULL DOOR WIDTH,
-            # not by whatever margin the Bedroom's own min depth happens to leave.
-            # This used to be plain `_ceil_u(Master Bedroom.min_h_m)` (2.84m raw,
-            # 3.0m grid-ceiled) — which only exceeds the ~2.5m strip depth by
-            # 0.5m. That 0.5m guaranteed spillover is BELOW ACCESS_DOOR_M (0.9m),
-            # so access_tree's geom.adjacent(..., ACCESS_DOOR_M) check can refuse
-            # to award a door even though this "guaranteed" touch is realised —
-            # a latent bug that doesn't show up while the solver has enough slack
-            # to over-satisfy the constraint, but confirmed to bite for real: an
-            # unrelated packing-pressure zone elsewhere in the model was enough to
-            # push the optimizer onto exactly a 0.5m spillover, leaving Master
-            # Bedroom/Bathroom/Walk-in Closet unreachable despite the "guaranteed"
-            # circulation touch. Compute the true floor instead: strip depth +
-            # door width. service_u mirrors slicer._slice_master's `service`
-            # strip-depth formula exactly (keep them in sync if either standard
-            # changes).
+            # The E/W overlap floor must clear the service strip by a FULL
+            # DOOR WIDTH, not by whatever margin the Bedroom's own min depth
+            # happens to leave. This used to be plain
+            # `_ceil_u(Master Bedroom.min_h_m)` (2.84m raw, 3.0m grid-ceiled)
+            # — which only exceeds the ~2.5m strip depth by 0.5m. That 0.5m
+            # guaranteed spillover is BELOW ACCESS_DOOR_M (0.9m), so
+            # access_tree's geom.adjacent(..., ACCESS_DOOR_M) check can refuse
+            # to award a door even though this "guaranteed" touch is realised
+            # — a latent bug that doesn't show up while the solver has enough
+            # slack to over-satisfy the constraint, but confirmed to bite for
+            # real: an unrelated packing-pressure zone elsewhere in the model
+            # was enough to push the optimizer onto exactly a 0.5m spillover,
+            # leaving Master Bedroom/Bathroom/Walk-in Closet unreachable
+            # despite the "guaranteed" circulation touch. Compute the true
+            # floor instead: strip depth + door width. service_u mirrors
+            # slicer._slice_master's `service` strip-depth formula exactly
+            # (keep them in sync if either standard changes).
             service_u = _ceil_u(max(
                 standards.ROOMS["Master Bathroom"].min_h_m,
                 standards.ROOMS["Walk-in Closet"].min_h_m,
             ))
             mbed_u = service_u + door_u
-            corridor_side_bools["master_suite"] = _force_vertical_overlap(
-                m, zv[circ], zv["master_suite"], mbed_u, "acc_master"
+            corridor_side_bools["master_suite"] = _force_master_corridor_overlap(
+                m, zv[circ], zv["master_suite"], mbed_u, door_u, "acc_master"
+            )
+            # Master Bedroom must have a real exterior wall (SNiP/Posobie
+            # cl. 2.8 daylight requirement) — as a CONSTRAINT, not left to the
+            # objective's taste (see _require_master_bedroom_perimeter).
+            _require_master_bedroom_perimeter(
+                m, zv["master_suite"], fp, corridor_side_bools["master_suite"], "hab_master"
             )
         if "children" in zv and _CHILD_CENTER_COVER:
             # children is NOT a plain attach: force the corridor to front the
