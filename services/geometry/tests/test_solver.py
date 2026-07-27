@@ -160,16 +160,90 @@ def test_tight_is_illegal_brief(tight_program):
 
 def test_children_bathroom_direct_needs_center_cover(roomy_program):
     # Proves _force_vertical_cover_center is LOAD-BEARING, not decorative: with it
-    # OFF (children falls back to a plain corridor/entry disjunction) the gE_eW
-    # handedness becomes feasible, but the hall Bathroom loses its direct corridor
-    # wall — its only non-through neighbour is no longer the Corridor. That is why
-    # gE_eW is xfailed rather than "fixed" by relaxing the constraint.
+    # OFF (children falls back to a plain corridor/entry disjunction) an entry-west
+    # handedness stays feasible, but the hall Bathroom loses its direct corridor
+    # wall — its only non-through neighbour is no longer the Corridor.
+    #
+    # VEHICLE CHANGED gE_eW -> gW_eW (the garage-parent "G" commit): G now makes
+    # gE_eW INFEASIBLE at SOLVE time, not invalid at validation time — with the
+    # garage pinned EAST and entry pinned WEST the two cannot share a wall, so the
+    # garage can never reach an allowed ensuite parent (Mudroom/Foyer live inside
+    # the entry zone) and the model is genuinely unsatisfiable. That is a correct
+    # consequence of the room-level garage guarantee, NOT a workaround for a test
+    # failure. gW_eW (garage + entry both WEST) still exercises the exact same
+    # center-cover property; measured on roomy, center-cover OFF vs ON, the
+    # Corridor<->Bathroom wall is 0.50 m vs 2.50 m — OFF drops it below
+    # ACCESS_DOOR_M (0.9 m), ON restores it well past it.
     solver._CHILD_CENTER_COVER = False
     try:
-        r = solve(roomy_program, "gE_eW", seed=1, time_limit_s=15, workers=1)
-        assert r.feasible, "gE_eW should be feasible once center-cover is relaxed"
+        r = solve(roomy_program, "gW_eW", seed=1, time_limit_s=15, workers=1)
+        assert r.feasible, "gW_eW should be feasible once center-cover is relaxed"
         rooms = {rm.name: tuple(rm.rect_m) for rm in build_layout(r, roomy_program).rooms}
         direct = "Corridor" in rooms and geom.adjacent(rooms["Bathroom"], rooms["Corridor"], 0.9)
         assert not direct, "without center-cover the Bathroom should NOT be corridor-direct"
     finally:
         solver._CHILD_CENTER_COVER = True
+
+
+# --- room-level access hardening: kitchen-direct (K) + garage parent (G) ------
+# K and G promote two ZONE-level access guarantees that only held by coincidence
+# (a slicer heuristic / the objective's taste) into room-level CP-SAT constraints
+# (see _force_corridor_overlaps_kitchen and the garage<->entry attach in
+# solver.py). On the roomy 184 m2 fixture BOTH already hold (the fixture packs the
+# kitchen_laundry cut on the corridor axis, and the garage already parents the
+# Mudroom), so these are regression PINS on the outcome, not exercises of the
+# constraints' active paths (K binds only when the corridor is orthogonal to the
+# cut; G's stranding only occurs when the garage would attach to circulation) --
+# which is exactly what "the sweep proved K and G are free" means. They guard
+# against a future repack silently reopening either hole.
+
+
+@pytest.mark.parametrize("preset", FEASIBLE_PRESETS)
+def test_kitchen_corridor_direct_room_level_K(program, preset):
+    # K: the corridor's shared segment with the kitchen_laundry zone must land on
+    # the KITCHEN room, NOT the Laundry strip. Asserting the Kitchen room (with a
+    # Laundry sibling actually present, i.e. the zone really split) is what makes
+    # this "not satisfiable by Laundry": a test that only checked the zone would
+    # pass with the corridor fronting Laundry. Duplicates the OUTCOME pinned by
+    # tests/test_validator.py::test_kitchen_direct_to_corridor_room_level (kept
+    # there as the pre-existing 184 pin); this is the separate guard tied to the K
+    # constraint, per the commit.
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    rooms = {rm.name: tuple(rm.rect_m) for rm in build_layout(r, program).rooms}
+    assert "Kitchen" in rooms and "Laundry" in rooms, "zone must have split into Kitchen + Laundry"
+    assert "Corridor" in rooms
+    assert geom.adjacent(rooms["Corridor"], rooms["Kitchen"], 0.9), (
+        "corridor must share a >=0.9 m wall with the KITCHEN room specifically, "
+        "not merely with the kitchen_laundry zone (the Laundry strip)"
+    )
+
+
+@pytest.mark.parametrize("preset", FEASIBLE_PRESETS)
+def test_garage_parent_is_mudroom_or_foyer_room_level_G(program, preset):
+    # G: the Garage must reach one of its allowed_ensuite_parents (Mudroom/Foyer),
+    # room-to-room, >= ACCESS_DOOR_M -- never stranded behind circulation (which
+    # the tier-2 rule blocks as a Garage parent). Assert both the geometry and that
+    # access_tree actually parents it on one of them.
+    from app.validator import ACCESS_DOOR_M, access_tree
+
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    assert "Garage" in rooms
+    touching = [
+        nm for nm in ("Mudroom", "Foyer")
+        if nm in rooms and geom.adjacent(rooms["Garage"], rooms[nm], ACCESS_DOOR_M)
+    ]
+    assert touching, (
+        f"Garage must share a >={ACCESS_DOOR_M} m wall with Mudroom or Foyer; touched none"
+    )
+    names = [rm.name for rm in layout.rooms]
+    edges, reached, _root = access_tree(layout.rooms)
+    parent_of = {c: p for p, c in edges}
+    gidx = names.index("Garage")
+    assert gidx in reached, "Garage must be reachable"
+    assert names[parent_of[gidx]] in ("Mudroom", "Foyer"), (
+        f"Garage's access-tree parent must be Mudroom/Foyer, got {names[parent_of[gidx]]!r}"
+    )

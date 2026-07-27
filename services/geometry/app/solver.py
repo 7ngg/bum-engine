@@ -412,6 +412,80 @@ def _force_vertical_cover_center(
     m.Add(2 * corr.y1 >= zone.y0 + zone.y1 + band_u + 2)
 
 
+def _force_corridor_overlaps_kitchen(
+    m: cp_model.CpModel,
+    corr: _ZoneVars,
+    kl: _ZoneVars,
+    dining_side: dict[str, cp_model.IntVar],
+    corridor_side: dict[str, cp_model.IntVar],
+    l_ns: int,
+    l_we: int,
+    overlap: int,
+    tag: str,
+) -> None:
+    """Room-level Kitchen-direct hardening (K). The zone-level access constraint
+    only promises corridor <-> kitchen_laundry ZONE >= a door; WHICH sub-room
+    (Kitchen or Laundry) receives the corridor's shared segment was left to
+    _slice_kitchen (66f3506's slicer heuristic). This forces that segment onto the
+    KITCHEN sub-rect in CP-SAT, so a repack can never route the corridor onto the
+    Laundry strip and strand the kitchen behind the Dining->Living chain.
+
+    _slice_kitchen cuts an `l_ns` (N/S cut) or `l_we` (W/E cut) unit Laundry strip
+    off the DINING end of the cut axis; Kitchen takes the rest. When the corridor
+    lands on the cut axis its shared edge already spans the full width of whichever
+    end room it fronts and the existing zone-level share suffices (Kitchen is that
+    end by _slice_kitchen's place_side rule), so those configs are AUTO-satisfied
+    and add nothing here. The gap is the ORTHOGONAL configs: there both sub-rooms
+    present on the corridor's edge and nothing stopped the overlap landing on the
+    Laundry band. This reifies the Kitchen band from the Dining side (=
+    _slice_kitchen's place_side when the corridor is orthogonal) and forces the
+    corridor's shared segment to cover >= `overlap` of it. Same one-directional,
+    reified-implication idiom as _force_master_corridor_overlap /
+    _require_master_bedroom_perimeter.
+    """
+    dN, dS, dE, dW = dining_side["N"], dining_side["S"], dining_side["E"], dining_side["W"]
+    cN, cS, cE, cW = corridor_side["N"], corridor_side["S"], corridor_side["E"], corridor_side["W"]
+    BIG = 10_000
+    # explicit affine helper vars (kl.y1 - l_ns etc.) so the Min/Max equalities
+    # take plain vars, not affine exprs
+    kl_y1_mL = m.NewIntVar(0, BIG, f"{tag}_kly1mL")
+    m.Add(kl_y1_mL == kl.y1 - l_ns)
+    kl_y0_pL = m.NewIntVar(0, BIG, f"{tag}_kly0pL")
+    m.Add(kl_y0_pL == kl.y0 + l_ns)
+    kl_x1_mL = m.NewIntVar(0, BIG, f"{tag}_klx1mL")
+    m.Add(kl_x1_mL == kl.x1 - l_we)
+    kl_x0_pL = m.NewIntVar(0, BIG, f"{tag}_klx0pL")
+    m.Add(kl_x0_pL == kl.x0 + l_we)
+
+    # corridor on a vertical (W/E) wall of kl, cut is N/S (Dining N or S): the
+    # corridor's shared segment is a Y range; require it to cover the Kitchen Y band
+    y_lo = m.NewIntVar(0, BIG, f"{tag}_ylo")
+    m.AddMaxEquality(y_lo, [corr.y0, kl.y0])
+    y_hi = m.NewIntVar(0, BIG, f"{tag}_yhi")
+    m.AddMinEquality(y_hi, [corr.y1, kl.y1])
+    kit_hi_S = m.NewIntVar(0, BIG, f"{tag}_kithiS")  # dS: Kitchen = [kl.y0, kl.y1 - L]
+    m.AddMinEquality(kit_hi_S, [corr.y1, kl_y1_mL])
+    kit_lo_N = m.NewIntVar(0, BIG, f"{tag}_kitloN")  # dN: Kitchen = [kl.y0 + L, kl.y1]
+    m.AddMaxEquality(kit_lo_N, [corr.y0, kl_y0_pL])
+    for cside in (cW, cE):
+        m.Add(kit_hi_S - y_lo >= overlap).OnlyEnforceIf([cside, dS])
+        m.Add(y_hi - kit_lo_N >= overlap).OnlyEnforceIf([cside, dN])
+
+    # corridor on a horizontal (N/S) wall of kl, cut is W/E (Dining W or E): the
+    # shared segment is an X range; require it to cover the Kitchen X band
+    x_lo = m.NewIntVar(0, BIG, f"{tag}_xlo")
+    m.AddMaxEquality(x_lo, [corr.x0, kl.x0])
+    x_hi = m.NewIntVar(0, BIG, f"{tag}_xhi")
+    m.AddMinEquality(x_hi, [corr.x1, kl.x1])
+    kit_hi_W = m.NewIntVar(0, BIG, f"{tag}_kithiW")  # dW: Kitchen = [kl.x0, kl.x1 - L]
+    m.AddMinEquality(kit_hi_W, [corr.x1, kl_x1_mL])
+    kit_lo_E = m.NewIntVar(0, BIG, f"{tag}_kitloE")  # dE: Kitchen = [kl.x0 + L, kl.x1]
+    m.AddMaxEquality(kit_lo_E, [corr.x0, kl_x0_pL])
+    for cside in (cN, cS):
+        m.Add(kit_hi_W - x_lo >= overlap).OnlyEnforceIf([cside, dW])
+        m.Add(x_hi - kit_lo_E >= overlap).OnlyEnforceIf([cside, dE])
+
+
 # Test seam (Task 5 Phase 2). Production is always True: children is connected to
 # the corridor by _force_vertical_cover_center, guaranteeing the hall Bathroom is
 # corridor-DIRECT. Set False to fall back to a plain children<->{corridor,entry}
@@ -725,7 +799,20 @@ def _solve_once(
         _attach(circ, ["entry", "living"], "acc_circ")        # backbone anchor
         _attach("entry", [circ, "living"], "acc_entry")       # backbone
         _attach("living", [circ, "entry"], "acc_living")      # backbone
-        _attach("garage", ["entry", circ], "acc_garage")
+        # G: Garage's access parent must be a room the tier-2 rule actually
+        # permits (Garage.allowed_ensuite_parents = Mudroom/Foyer, both inside the
+        # entry zone), never circulation -- where allowed_ensuite_parents blocks
+        # Corridor->Garage and strands it (audit finding; proven in an earlier
+        # sweep). _slice_entry derives the mudroom side from the real garage-facing
+        # edge and Mudroom spans that whole end, so a zone-level garage<->entry
+        # >= door wall already lands entirely on Mudroom (or the Foyer, if the entry
+        # zone was too small to slice) at ROOM level -- no room-level pin on Mudroom
+        # itself is needed. Dropping `circ` from the disjunction is the whole fix;
+        # the entry attach was already the intended parent in the original OR.
+        if "entry" in zv:
+            _attach("garage", ["entry"], "acc_garage")
+        else:
+            _attach("garage", [circ], "acc_garage")
         if "master_suite" in zv:
             # master is NOT a plain attach: force the corridor to front the
             # Bedroom band (whichever side wins — see
@@ -792,6 +879,19 @@ def _solve_once(
             )
             m.Add(sh == 1)
             corridor_side_bools["kitchen_laundry"] = kl_corridor_bools
+            # K: the zone-level share above only promises corridor<->kitchen_laundry
+            # ZONE; harden it to the KITCHEN ROOM so the corridor's shared segment
+            # can never land on the Laundry strip instead (which would leave the
+            # kitchen reachable only via Dining->Living). Reified from the Dining
+            # cut side (cut_axis_bools) + the corridor side (kl_corridor_bools).
+            if "kitchen_laundry" in cut_axis_bools:
+                l_ns = _ceil_u(standards.ROOMS["Laundry"].min_h_m)  # N/S-cut strip
+                l_we = _ceil_u(standards.ROOMS["Laundry"].min_w_m)  # W/E-cut strip
+                _force_corridor_overlaps_kitchen(
+                    m, zv[circ], zv["kitchen_laundry"],
+                    cut_axis_bools["kitchen_laundry"], kl_corridor_bools,
+                    l_ns, l_we, door_u, "acc_kitchen_room",
+                )
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
     # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met
