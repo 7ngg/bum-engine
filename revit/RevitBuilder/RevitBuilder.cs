@@ -258,6 +258,7 @@ namespace BumEngine.Revit
                 all.Add(layout.Entry);
 
             var cache = new Dictionary<(int, int), FamilySymbol>();
+            var legacyDoors = 0;
             foreach (var d in all)
             {
                 if (!walls.TryGetValue(d.WallId, out var host))
@@ -269,9 +270,14 @@ namespace BumEngine.Revit
                     doc, symbol, DoorWidthBips, DoorHeightBips,
                     d.WidthM, d.HeightM, cache, result);
                 var loc = new XYZ(ToFeet(d.Center[0]), ToFeet(d.Center[1]), level.Elevation);
-                doc.Create.NewFamilyInstance(loc, sized, host, level, StructuralType.NonStructural);
+                var inst = doc.Create.NewFamilyInstance(loc, sized, host, level, StructuralType.NonStructural);
+                ApplyDoorSwing(doc, inst, d, layout, result, ref legacyDoors);
                 result.Doors++;
             }
+            if (legacyDoors > 0)
+                result.Notes.Add(
+                    $"{legacyDoors} door(s) carried no hinge/swing_into (layout schema " +
+                    $"older than 1.2.0); left at Revit's derived hand/facing");
             result.Notes.Add(
                 $"doors: {result.Doors} placed across {cache.Count} sized type(s) of " +
                 $"family '{symbol.Family.Name}'");
@@ -310,6 +316,114 @@ namespace BumEngine.Revit
                 $"windows: {result.Windows} placed across {cache.Count} sized type(s) of " +
                 $"family '{symbol.Family.Name}'");
         }
+
+        /// <summary>
+        /// Orient a placed door so it matches the layout's hinge + swing_into.
+        ///
+        /// Schema 1.2.0 added those two fields precisely because they did not
+        /// exist before: with no hinge or facing in layout.json this builder had
+        /// nothing to apply, so Revit derived hand and facing from the host wall
+        /// alone — uniformly, and arbitrarily with respect to the room. That is
+        /// the "qapilar divara acilmir" / colliding-swings complaint.
+        ///
+        /// FACING is unambiguous and fully verifiable: the leaf must sweep into
+        /// the swing_into room, so the desired facing is the wall normal pointing
+        /// at that room's centre, and the result is checked geometrically.
+        ///
+        /// HAND is enforced to a STATED CONVENTION rather than a derived truth:
+        /// we require HandOrientation to point from the hinge jamb toward the far
+        /// jamb. Whether a given door family models hand as hinge->latch or the
+        /// reverse is a family authoring choice the API does not expose, so if a
+        /// family mirrors it, every door mirrors together — consistent and
+        /// obvious in one look, instead of today's per-door arbitrariness. Worth
+        /// confirming once against a real family; see the build Notes.
+        /// </summary>
+        private void ApplyDoorSwing(
+            Document doc, FamilyInstance inst, Door d, LayoutModel layout,
+            BuildResult result, ref int legacyDoors)
+        {
+            if (!d.HasSwing)
+            {
+                legacyDoors++;   // older schema: leave Revit's own derivation alone
+                return;
+            }
+
+            var wall = layout.Walls.FirstOrDefault(w => w.Id == d.WallId);
+            if (wall == null)
+            {
+                result.Warnings.Add($"SWING SKIPPED: door {d.From}->{d.To} host wall {d.WallId} not in layout");
+                return;
+            }
+            var target = TargetCentre(layout, d.SwingInto!);
+            if (target == null)
+            {
+                result.Warnings.Add(
+                    $"SWING SKIPPED: door {d.From}->{d.To} swings into '{d.SwingInto}', " +
+                    $"which is neither a room nor the terrace");
+                return;
+            }
+
+            // wall direction, and the normal that points at the target room
+            double ux = wall.End[0] - wall.Start[0], uy = wall.End[1] - wall.Start[1];
+            var len = Math.Sqrt(ux * ux + uy * uy);
+            if (len < 1e-9)
+            {
+                result.Warnings.Add($"SWING SKIPPED: door {d.From}->{d.To} host wall {d.WallId} is zero-length");
+                return;
+            }
+            ux /= len; uy /= len;
+
+            var nx = -uy; var ny = ux;
+            if ((target.Value.X - d.Center[0]) * nx + (target.Value.Y - d.Center[1]) * ny < 0)
+            { nx = -nx; ny = -ny; }
+            var wantFacing = new XYZ(nx, ny, 0);
+
+            // hand: from the hinge jamb toward the far jamb
+            var sign = string.Equals(d.Hinge, "start", StringComparison.OrdinalIgnoreCase) ? 1.0 : -1.0;
+            var wantHand = new XYZ(ux * sign, uy * sign, 0);
+
+            doc.Regenerate(); // orientations are only meaningful after regeneration
+
+            if (inst.FacingOrientation.DotProduct(wantFacing) < 0)
+            {
+                if (inst.CanFlipFacing) inst.flipFacing();
+                else result.Warnings.Add($"SWING: door {d.From}->{d.To} cannot flip facing (family forbids it)");
+            }
+            if (inst.HandOrientation.DotProduct(wantHand) < 0)
+            {
+                if (inst.CanFlipHand) inst.flipHand();
+                else result.Warnings.Add($"SWING: door {d.From}->{d.To} cannot flip hand (family forbids it)");
+            }
+
+            doc.Regenerate();
+
+            // A flip returning without throwing is not proof it took — read back,
+            // exactly like the PARAM DID NOT STICK check on opening sizes.
+            if (inst.FacingOrientation.DotProduct(wantFacing) < 0)
+                result.Warnings.Add(
+                    $"SWING DID NOT STICK: door {d.From}->{d.To} ({d.WallId}) should open into " +
+                    $"'{d.SwingInto}' (facing {Fmt(wantFacing)}) but the model reads " +
+                    $"{Fmt(inst.FacingOrientation)}");
+            if (inst.HandOrientation.DotProduct(wantHand) < 0)
+                result.Warnings.Add(
+                    $"SWING DID NOT STICK: door {d.From}->{d.To} ({d.WallId}) hinge '{d.Hinge}' " +
+                    $"wants hand {Fmt(wantHand)} but the model reads {Fmt(inst.HandOrientation)}");
+        }
+
+        /// <summary>Centre of the room named by swing_into, or of the terrace.</summary>
+        private static (double X, double Y)? TargetCentre(LayoutModel layout, string name)
+        {
+            var room = layout.Rooms.FirstOrDefault(r => r.Name == name);
+            if (room != null) return (room.CenterX, room.CenterY);
+            if (layout.Terrace != null && name == "Terrace")
+            {
+                var t = layout.Terrace.RectM;
+                return ((t[0] + t[2]) / 2.0, (t[1] + t[3]) / 2.0);
+            }
+            return null;
+        }
+
+        private static string Fmt(XYZ v) => $"({v.X:0.##},{v.Y:0.##})";
 
         /// <summary>
         /// Return a FamilySymbol of <paramref name="baseSymbol"/>'s family sized

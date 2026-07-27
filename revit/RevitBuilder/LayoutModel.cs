@@ -87,6 +87,20 @@ namespace BumEngine.Revit
         [JsonPropertyName("center")] public double[] Center { get; set; } = new double[2];
         [JsonPropertyName("width_m")] public double WidthM { get; set; }
         [JsonPropertyName("height_m")] public double HeightM { get; set; }
+
+        // Schema 1.2.0. Null on older layouts, which is the backward-compat
+        // signal: the builder then leaves Revit's derived hand/facing alone and
+        // logs that it did, rather than guessing.
+        /// <summary>Which END of the host wall the leaf hangs from: "start" or
+        /// "end", naming Wall.Start / Wall.End directly.</summary>
+        [JsonPropertyName("hinge")] public string? Hinge { get; set; }
+        /// <summary>Name of the room the leaf sweeps into. Always this door's
+        /// own From or To.</summary>
+        [JsonPropertyName("swing_into")] public string? SwingInto { get; set; }
+
+        /// <summary>True when this door carries schema-1.2.0 swing data.</summary>
+        public bool HasSwing =>
+            !string.IsNullOrEmpty(Hinge) && !string.IsNullOrEmpty(SwingInto);
     }
 
     public sealed class Window
