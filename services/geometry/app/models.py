@@ -14,7 +14,7 @@ from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 # The layout.json wire version — shared with schemas/layout.schema.json and
 # revit/RevitBuilder/LayoutModel.cs, both unchanged this task, so it stays 1.1.0.
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 # program.json forked to 1.2.0 for the target_area_m2 -> footprint_target_m2
 # rename, then to 1.3.0 for the optional `site` block (setbacks + coverage cap).
 # Both are additive: 1.0.0/1.1.0/1.2.0 documents still load (site defaults). The
@@ -177,6 +177,14 @@ class Door(BaseModel):
     center: list[float]
     width_m: float = Field(gt=0)
     height_m: float = Field(gt=0)
+    # 1.2.0. Which END of the host wall the leaf is hinged at -- "start"/"end"
+    # name wall.start/wall.end directly, which _build_walls guarantees are the
+    # host edge's lo/hi. An enum, not a point: the endpoints already exist on the
+    # wall, so a duplicated coordinate could drift out of agreement with them,
+    # and a consumer gets an exact two-state answer with no float comparison.
+    hinge: Literal["start", "end"] = "start"
+    # Room the leaf sweeps into. Always one of this door's own from/to.
+    swing_into: str = ""
 
     model_config = {"populate_by_name": True}
 
@@ -195,7 +203,7 @@ class Terrace(BaseModel):
 
 
 class Layout(BaseModel):
-    version: Literal["1.0.0", "1.1.0"] = SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0", "1.2.0"] = SCHEMA_VERSION
     preset: str
     seed: int
     objective: float

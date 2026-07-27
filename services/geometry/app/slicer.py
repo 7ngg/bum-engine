@@ -676,6 +676,250 @@ def _build_entry(rooms: list[FinalRoom], recs: list[_WallRec], warnings: list[st
 
 
 # ---------------------------------------------------------------------------
+# door swing: hinge side, facing, and arc-collision resolution
+# ---------------------------------------------------------------------------
+#
+# The architect's standing complaints — "qapilar divara acilmir" (doors don't
+# open against the wall) and three circled doors in a row whose swings collide —
+# were never a Revit bug. layout.json simply carried no hinge or facing data, so
+# RevitBuilder called NewFamilyInstance and let Revit derive hand and facing from
+# the wall alone: uniform, and arbitrary with respect to the room. Hinge side,
+# facing and arc collision are pure geometry; nothing here needs furniture.
+#
+# Swept region model: the leaf is hinged at one jamb and sweeps a QUARTER DISC of
+# radius = leaf width, from the closed position (lying in the doorway, along the
+# wall, pointing at the far jamb) to the open position (perpendicular to the
+# wall, inside the room it opens into). Note this quarter lies on the FAR-JAMB
+# side of the hinge, so hinging at the end nearer a corner puts the open leaf
+# parallel to and ~one jamb-offset from that corner's return wall — which is
+# exactly "opens flat against the wall".
+
+SWING_ARC_SEGMENTS = 16  # ~1 mm sagitta error at a 0.9 m leaf; well under GRID_M
+
+
+def _wall_unit(wall: Wall) -> tuple[float, float]:
+    sx, sy = wall.start
+    ex, ey = wall.end
+    length = math.hypot(ex - sx, ey - sy)
+    return ((ex - sx) / length, (ey - sy) / length)
+
+
+def _hinge_frame(door: Door, wall: Wall, hinge: str) -> tuple[tuple[float, float], tuple[float, float]]:
+    """(hinge point, unit vector along the wall from the hinge toward the far jamb)."""
+    ux, uy = _wall_unit(wall)
+    half = door.width_m / 2.0
+    if hinge == "start":
+        return (door.center[0] - ux * half, door.center[1] - uy * half), (ux, uy)
+    return (door.center[0] + ux * half, door.center[1] + uy * half), (-ux, -uy)
+
+
+def _into_normal(door: Door, wall: Wall, rect: geom.Rect) -> tuple[float, float] | None:
+    """Unit normal off the wall pointing into `rect`."""
+    ux, uy = _wall_unit(wall)
+    for nx, ny in ((-uy, ux), (uy, -ux)):
+        px = door.center[0] + nx * 1e-3
+        py = door.center[1] + ny * 1e-3
+        if rect[0] - geom.EPS <= px <= rect[2] + geom.EPS and rect[1] - geom.EPS <= py <= rect[3] + geom.EPS:
+            return (nx, ny)
+    return None
+
+
+def _nearer_end(door: Door, wall: Wall) -> str:
+    """Which wall endpoint the door sits closer to. wall.start is always edge.lo
+    and wall.end always edge.hi (see _build_walls), so this is unambiguous."""
+    ds = math.dist(door.center, wall.start)
+    de = math.dist(door.center, wall.end)
+    return "start" if ds <= de else "end"
+
+
+def swing_wedge(
+    hinge_pt: tuple[float, float],
+    d_along: tuple[float, float],
+    d_into: tuple[float, float],
+    radius: float,
+    segments: int = SWING_ARC_SEGMENTS,
+) -> list[tuple[float, float]]:
+    """Convex polygon approximating the swept quarter disc (hinge + arc points)."""
+    a0 = math.atan2(d_along[1], d_along[0])
+    a1 = math.atan2(d_into[1], d_into[0])
+    sweep = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi  # shortest, always +/-90 deg
+    pts = [hinge_pt]
+    for k in range(segments + 1):
+        a = a0 + sweep * k / segments
+        pts.append((hinge_pt[0] + radius * math.cos(a), hinge_pt[1] + radius * math.sin(a)))
+    return pts
+
+
+def _wedge_fits(hinge_pt, d_along, d_into, radius: float, rect: geom.Rect) -> bool:
+    """Does the whole quarter disc lie inside `rect`?
+
+    The disc's extent from the hinge is exactly `radius` along each of the two
+    axis-aligned directions and nothing beyond, so checking those two extreme
+    points against an axis-aligned rect is necessary AND sufficient. A wedge that
+    fits cannot cross a wall, because every wall lies on a room boundary.
+    """
+    for dx, dy in (d_along, d_into):
+        px, py = hinge_pt[0] + dx * radius, hinge_pt[1] + dy * radius
+        if not (rect[0] - geom.EPS <= px <= rect[2] + geom.EPS and rect[1] - geom.EPS <= py <= rect[3] + geom.EPS):
+            return False
+    return True
+
+
+def _convex_overlap(p: list, q: list, tol: float = 1e-9) -> bool:
+    """Separating-axis test. Touching counts as clear, only positive area is a hit."""
+    for poly in (p, q):
+        n = len(poly)
+        for i in range(n):
+            x0, y0 = poly[i]
+            x1, y1 = poly[(i + 1) % n]
+            ax, ay = -(y1 - y0), (x1 - x0)
+            norm = math.hypot(ax, ay)
+            if norm < 1e-12:
+                continue
+            ax, ay = ax / norm, ay / norm
+            pmin = min(ax * x + ay * y for x, y in p)
+            pmax = max(ax * x + ay * y for x, y in p)
+            qmin = min(ax * x + ay * y for x, y in q)
+            qmax = max(ax * x + ay * y for x, y in q)
+            if pmax < qmin + tol or qmax < pmin + tol:
+                return False
+    return True
+
+
+def _assign_swings(
+    rooms: list[FinalRoom],
+    recs: list[_WallRec],
+    doors: list[Door],
+    entry: Door,
+    terrace: Terrace | None,
+    warnings: list[str],
+) -> None:
+    """Set `hinge` and `swing_into` on every door, resolving swing collisions.
+
+    Per door, candidate options in preference order:
+        (nearer end, into `to`)  <- the rule: hinge against the wall, open into
+        (farther end, into `to`)    the room being entered
+        (nearer end, into `from`)  <- outward swing, the small-room exception
+        (farther end, into `from`)
+    Hinge flips are tried BEFORE facing flips: the facing rule (open into the
+    destination, never back into circulation) is a rule with a stated exception,
+    whereas the hinge end is a preference, so the cheaper concession is the hinge.
+
+    An option is admissible only if the whole wedge fits inside the target room
+    — that check IS the small-room exception and the no-crossing-a-wall rule at
+    once. Two doors can only foul each other if they swing into the same space,
+    so collisions are detected per target room.
+    """
+    wall_by_id = {r.wall.id: r.wall for r in recs}
+    rect_by_name: dict[str, geom.Rect] = {rm.name: rm.rect for rm in rooms}
+    if terrace is not None:
+        rect_by_name["Terrace"] = tuple(terrace.rect_m)
+    circ_names = {rm.name for rm in rooms if rm.category == "circ"}
+
+    all_doors = list(doors) + [entry]
+    options: list[list[tuple]] = []  # per door: [(hinge, target, wedge), ...]
+
+    for d in all_doors:
+        wall = wall_by_id.get(d.wall_id)
+        opts: list[tuple] = []
+        if wall is not None:
+            near = _nearer_end(d, wall)
+            far = "end" if near == "start" else "start"
+            for target in (d.to, d.from_):
+                rect = rect_by_name.get(target)
+                if rect is None:
+                    continue  # "OUTSIDE" has no rect; never swing there
+                for hinge in (near, far):
+                    hp, along = _hinge_frame(d, wall, hinge)
+                    into = _into_normal(d, wall, rect)
+                    if into is None:
+                        continue
+                    if not _wedge_fits(hp, along, into, d.width_m, rect):
+                        continue
+                    opts.append((hinge, target, swing_wedge(hp, along, into, d.width_m)))
+        if not opts:
+            # nothing admissible: keep the rule-preferred answer and say so
+            near = _nearer_end(d, wall) if wall is not None else "start"
+            warnings.append(
+                f"door {d.from_}->{d.to} on {d.wall_id}: no swing fits any adjoining "
+                f"room without crossing a wall; defaulted to hinge {near}, opening into {d.to}"
+            )
+            opts = [(near, d.to, [])]
+        options.append(opts)
+
+    choice = [0] * len(all_doors)
+
+    def collisions(sel: list[int]) -> list[tuple[int, int]]:
+        hits = []
+        for i in range(len(all_doors)):
+            hi_, ti, wi = options[i][sel[i]]
+            if not wi:
+                continue
+            for j in range(i + 1, len(all_doors)):
+                hj, tj, wj = options[j][sel[j]]
+                if not wj or ti != tj:
+                    continue  # different rooms cannot foul each other
+                if _convex_overlap(wi, wj):
+                    hits.append((i, j))
+        return hits
+
+    found = collisions(choice)
+    initial = list(found)
+    for _ in range(4 * len(all_doors) + 8):
+        current = collisions(choice)
+        if not current:
+            break
+        moved = False
+        for i, j in current:
+            for idx in (i, j):
+                for alt in range(choice[idx] + 1, len(options[idx])):
+                    trial = list(choice)
+                    trial[idx] = alt
+                    if len(collisions(trial)) < len(current):
+                        choice = trial
+                        moved = True
+                        break
+                if moved:
+                    break
+            if moved:
+                break
+        if not moved:
+            break
+
+    for k, d in enumerate(all_doors):
+        hinge, target, _ = options[k][choice[k]]
+        d.hinge = hinge
+        d.swing_into = target
+        wall = wall_by_id.get(d.wall_id)
+        if wall is not None and hinge != _nearer_end(d, wall):
+            warnings.append(
+                f"door {d.from_}->{d.to} on {d.wall_id}: hinge moved to the FAR end of "
+                f"the wall (not the nearer one) to clear a swing collision"
+            )
+        if target != d.to:
+            warnings.append(
+                f"door {d.from_}->{d.to} on {d.wall_id}: opens OUTWARD into {target} "
+                f"(the inward swing does not fit {d.to} or collided)"
+            )
+            if target in circ_names:
+                warnings.append(
+                    f"door {d.from_}->{d.to} swings out into circulation ({target}) - "
+                    f"review: an outward leaf here obstructs the corridor"
+                )
+
+    for i, j in collisions(choice):
+        a, b = all_doors[i], all_doors[j]
+        warnings.append(
+            f"UNRESOLVED swing collision: {a.from_}->{a.to} ({a.wall_id}) and "
+            f"{b.from_}->{b.to} ({b.wall_id}) both swing into {a.swing_into}"
+        )
+    if initial and not collisions(choice):
+        warnings.append(
+            f"resolved {len(initial)} swing collision(s) by hinge/facing choice"
+        )
+
+
+# ---------------------------------------------------------------------------
 # windows + terrace
 # ---------------------------------------------------------------------------
 
@@ -824,6 +1068,9 @@ def build_layout(result: SolveResult, program: Program, wall_height_m: float = 2
     windows = _build_windows(rooms, recs)
     terrace, terrace_doors = _build_terrace(rooms, recs)
     doors.extend(terrace_doors)
+    # hinge/facing last: it needs the terrace rect and the complete door set,
+    # since a collision is only detectable across all doors sharing a room.
+    _assign_swings(rooms, recs, doors, entry, terrace, warnings)
 
     return Layout(
         preset=result.preset,
