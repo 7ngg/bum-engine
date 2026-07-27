@@ -46,7 +46,29 @@ GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 # soft_min +0.0625) nets to the rest and is consistent with the repacking
 # (smaller total zone area, different service-zone position). No term moved
 # in a way the repacking doesn't explain.
-EXPECTED_OBJECTIVE = 288.0
+#
+# EXPECTED_OBJECTIVE moved 288.0 -> -97.5625 in 9edf61a (exact tiling:
+# COVERAGE_MIN 0.95 -> 1.00, AREA_HI 1.20 -> 1.50, which fixed the ragged
+# envelope). Verified term-by-term before re-baselining, on the same standard as
+# the b990700 move above -- the recomputed breakdown reproduces the solver's own
+# objective to the digit in BOTH arms, and the term deltas sum exactly to the
+# -385.5625 swing:
+#     fp_dev             -120.0000   footprint grows 200 -> 210 m2, further from
+#                                    the 184 m2 target, to give the zones a
+#                                    rectangle they can tile exactly
+#     adhere             -296.8750   zones pushed off their reconciled targets
+#                                    to fill the footprint with no void
+#     coverage            +49.3750   more of the footprint is covered (all of it)
+#     service_northness   -18.0000   service zones sit further south in the
+#                                    new packing
+#     soft_min             -0.0625
+#     desirable/semi       +0.0000   adjacencies did not move (2 met -> 2 met)
+#     ------------------------------
+#     total              -385.5625
+# The objective got WORSE by design: exact tiling is bought with footprint and
+# area-adherence, and neither is free. Nothing here is unexplained by the
+# repacking.
+EXPECTED_OBJECTIVE = -97.5625
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
