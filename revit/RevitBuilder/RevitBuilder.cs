@@ -26,6 +26,10 @@ namespace BumEngine.Revit
             public int Windows;
             public int Terraces;
             public readonly List<string> Warnings = new();
+            /// <summary>Non-failure diagnostics: which families/types were chosen,
+            /// which sized types were created. Kept apart from Warnings so a clean
+            /// build still reports what it actually placed.</summary>
+            public readonly List<string> Notes = new();
             public string? SavedPath;
         }
 
@@ -55,8 +59,8 @@ namespace BumEngine.Revit
                 CreateRooms(doc, layout, level, result);
                 CreateTerrace(doc, layout, level, result);
 
-                var doorSymbol = FindSymbol(doc, BuiltInCategory.OST_Doors);
-                var windowSymbol = FindSymbol(doc, BuiltInCategory.OST_Windows);
+                var doorSymbol = FindSymbol(doc, BuiltInCategory.OST_Doors, "door", result);
+                var windowSymbol = FindSymbol(doc, BuiltInCategory.OST_Windows, "window", result);
                 PlaceDoors(doc, layout, level, wallElems, doorSymbol, result);
                 PlaceWindows(doc, layout, level, wallElems, windowSymbol, result);
 
@@ -217,6 +221,29 @@ namespace BumEngine.Revit
 
         // ---- openings -------------------------------------------------------
 
+        // WHY THIS IS NOT AS SIMPLE AS SETTING A PARAMETER ON THE INSTANCE:
+        // stock Revit door/window families carry Width and Height as TYPE
+        // parameters on the FamilySymbol. A placed FamilyInstance has no such
+        // parameter at all, so `inst.get_Parameter(DOOR_WIDTH)` returns null and
+        // the set is a silent no-op. That is exactly how every opening in the
+        // exported model ended up at its family's catalog default — windows came
+        // out as "Fixed / 0406 x 0610 mm" (16" x 24"), far too small to read as
+        // windows, while the layout asked for 1500 x 1200.
+        // The only correct fix is to duplicate the symbol once per DISTINCT size,
+        // set width/height on the duplicate, and place instances against it.
+
+        // Width/Height live under different BuiltInParameters depending on how
+        // the family author bound them; try each, then fall back to a by-name
+        // lookup. Whichever resolves first wins, and a miss is reported loudly.
+        private static readonly BuiltInParameter[] DoorWidthBips =
+            { BuiltInParameter.DOOR_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM };
+        private static readonly BuiltInParameter[] DoorHeightBips =
+            { BuiltInParameter.DOOR_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM };
+        private static readonly BuiltInParameter[] WindowWidthBips =
+            { BuiltInParameter.WINDOW_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM };
+        private static readonly BuiltInParameter[] WindowHeightBips =
+            { BuiltInParameter.WINDOW_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM };
+
         private void PlaceDoors(
             Document doc, LayoutModel layout, Level level, Dictionary<string, Autodesk.Revit.DB.Wall> walls,
             FamilySymbol? symbol, BuildResult result)
@@ -226,11 +253,11 @@ namespace BumEngine.Revit
                 result.Warnings.Add("no door family available; doors skipped");
                 return;
             }
-            EnsureActive(doc, symbol);
             var all = new List<Door>(layout.Doors);
             if (layout.Entry != null && !string.IsNullOrEmpty(layout.Entry.WallId))
                 all.Add(layout.Entry);
 
+            var cache = new Dictionary<(int, int), FamilySymbol>();
             foreach (var d in all)
             {
                 if (!walls.TryGetValue(d.WallId, out var host))
@@ -238,12 +265,16 @@ namespace BumEngine.Revit
                     result.Warnings.Add($"door {d.From}->{d.To} host wall {d.WallId} missing");
                     continue;
                 }
+                var sized = GetSizedSymbol(
+                    doc, symbol, DoorWidthBips, DoorHeightBips,
+                    d.WidthM, d.HeightM, cache, result);
                 var loc = new XYZ(ToFeet(d.Center[0]), ToFeet(d.Center[1]), level.Elevation);
-                var inst = doc.Create.NewFamilyInstance(loc, symbol, host, level, StructuralType.NonStructural);
-                TrySetParam(inst, BuiltInParameter.DOOR_WIDTH, ToFeet(d.WidthM));
-                TrySetParam(inst, BuiltInParameter.DOOR_HEIGHT, ToFeet(d.HeightM));
+                doc.Create.NewFamilyInstance(loc, sized, host, level, StructuralType.NonStructural);
                 result.Doors++;
             }
+            result.Notes.Add(
+                $"doors: {result.Doors} placed across {cache.Count} sized type(s) of " +
+                $"family '{symbol.Family.Name}'");
         }
 
         private void PlaceWindows(
@@ -255,7 +286,7 @@ namespace BumEngine.Revit
                 result.Warnings.Add("no window family available; windows skipped");
                 return;
             }
-            EnsureActive(doc, symbol);
+            var cache = new Dictionary<(int, int), FamilySymbol>();
             foreach (var wd in layout.Windows)
             {
                 if (!walls.TryGetValue(wd.WallId, out var host))
@@ -263,24 +294,104 @@ namespace BumEngine.Revit
                     result.Warnings.Add($"window in {wd.Room} host wall {wd.WallId} missing");
                     continue;
                 }
+                var sized = GetSizedSymbol(
+                    doc, symbol, WindowWidthBips, WindowHeightBips,
+                    wd.WidthM, wd.HeightM, cache, result);
                 var loc = new XYZ(ToFeet(wd.Center[0]), ToFeet(wd.Center[1]), level.Elevation + ToFeet(wd.SillM));
-                var inst = doc.Create.NewFamilyInstance(loc, symbol, host, level, StructuralType.NonStructural);
-                TrySetParam(inst, BuiltInParameter.WINDOW_WIDTH, ToFeet(wd.WidthM));
-                TrySetParam(inst, BuiltInParameter.WINDOW_HEIGHT, ToFeet(wd.HeightM));
-                TrySetParam(inst, BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM, ToFeet(wd.SillM));
+                var inst = doc.Create.NewFamilyInstance(loc, sized, host, level, StructuralType.NonStructural);
+                // Sill height IS genuinely an instance parameter on stock windows —
+                // it is the one of the three that was working before.
+                SetLengthParam(
+                    inst, new[] { BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM }, "Sill Height",
+                    wd.SillM, $"window in {wd.Room} ({wd.WallId})", result);
                 result.Windows++;
             }
+            result.Notes.Add(
+                $"windows: {result.Windows} placed across {cache.Count} sized type(s) of " +
+                $"family '{symbol.Family.Name}'");
+        }
+
+        /// <summary>
+        /// Return a FamilySymbol of <paramref name="baseSymbol"/>'s family sized
+        /// exactly width x height metres, creating (and caching) one duplicated
+        /// type per distinct size. Type names follow Revit convention —
+        /// "1500 x 1200 mm" — so the size is legible in the Project Browser.
+        /// Falls back to the base symbol only if sizing is impossible, and says so.
+        /// </summary>
+        private FamilySymbol GetSizedSymbol(
+            Document doc, FamilySymbol baseSymbol,
+            BuiltInParameter[] widthBips, BuiltInParameter[] heightBips,
+            double widthM, double heightM,
+            Dictionary<(int, int), FamilySymbol> cache, BuildResult result)
+        {
+            var wMm = (int)Math.Round(widthM * 1000.0);
+            var hMm = (int)Math.Round(heightM * 1000.0);
+            var key = (wMm, hMm);
+            if (cache.TryGetValue(key, out var cached)) return cached;
+
+            var typeName = $"{wMm} x {hMm} mm";
+            var family = baseSymbol.Family;
+
+            // Re-running against a document that already holds our types must
+            // reuse them, not throw on the duplicate name.
+            var sym = family.GetFamilySymbolIds()
+                .Select(id => doc.GetElement(id))
+                .OfType<FamilySymbol>()
+                .FirstOrDefault(s => s.Name == typeName);
+
+            var created = false;
+            if (sym == null)
+            {
+                try
+                {
+                    sym = (FamilySymbol)baseSymbol.Duplicate(typeName);
+                    created = true;
+                }
+                catch (Exception ex)
+                {
+                    result.Warnings.Add(
+                        $"SIZING FAILED: could not duplicate '{family.Name}' type for " +
+                        $"{typeName}: {ex.Message} — falling back to catalog default " +
+                        $"'{baseSymbol.Name}', openings of this size will be the WRONG SIZE");
+                    EnsureActive(doc, baseSymbol);
+                    cache[key] = baseSymbol;
+                    return baseSymbol;
+                }
+            }
+
+            var label = $"{family.Name} / {typeName}";
+            var okW = SetLengthParam(sym, widthBips, "Width", widthM, label, result);
+            var okH = SetLengthParam(sym, heightBips, "Height", heightM, label, result);
+            doc.Regenerate(); // let formula/constraint-driven families settle first
+
+            // Set() returning true is not proof: a constrained or formula-driven
+            // parameter can accept the write and then snap back. Read it back.
+            VerifyLengthParam(sym, widthBips, "Width", widthM, label, okW, result);
+            VerifyLengthParam(sym, heightBips, "Height", heightM, label, okH, result);
+
+            EnsureActive(doc, sym);
+            if (created)
+                result.Notes.Add($"created opening type '{label}'");
+            cache[key] = sym;
+            return sym;
         }
 
         // ---- helpers --------------------------------------------------------
 
-        private static FamilySymbol? FindSymbol(Document doc, BuiltInCategory category)
+        private static FamilySymbol? FindSymbol(
+            Document doc, BuiltInCategory category, string what, BuildResult result)
         {
-            return new FilteredElementCollector(doc)
+            var sym = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol))
                 .OfCategory(category)
                 .Cast<FamilySymbol>()
                 .FirstOrDefault();
+            // Selection is still "first symbol of the category in the template" —
+            // deliberately unchanged here, but no longer invisible: report it so a
+            // surprising family (e.g. a non-opening "Fixed" window) is obvious.
+            if (sym != null)
+                result.Notes.Add($"{what} base family: '{sym.Family.Name}' (base type '{sym.Name}')");
+            return sym;
         }
 
         private static void EnsureActive(Document doc, FamilySymbol symbol)
@@ -292,10 +403,69 @@ namespace BumEngine.Revit
             }
         }
 
-        private static void TrySetParam(Element e, BuiltInParameter bip, double value)
+        /// <summary>Set a length parameter (metres in, feet stored), trying each
+        /// BuiltInParameter then a by-name lookup. Every failure mode is reported —
+        /// a silently discarded return value is what hid the opening-size defect.</summary>
+        private static bool SetLengthParam(
+            Element e, BuiltInParameter[] bips, string paramName,
+            double meters, string label, BuildResult result)
         {
-            var p = e.get_Parameter(bip);
-            if (p != null && !p.IsReadOnly) p.Set(value);
+            Parameter? p = null;
+            foreach (var bip in bips)
+            {
+                p = e.get_Parameter(bip);
+                if (p != null) break;
+            }
+            p ??= e.LookupParameter(paramName);
+
+            if (p == null)
+            {
+                result.Warnings.Add($"PARAM MISSING: '{paramName}' not found on {label}");
+                return false;
+            }
+            if (p.IsReadOnly)
+            {
+                result.Warnings.Add($"PARAM READ-ONLY: '{paramName}' on {label}");
+                return false;
+            }
+            if (p.StorageType != StorageType.Double)
+            {
+                result.Warnings.Add(
+                    $"PARAM WRONG TYPE: '{paramName}' on {label} is {p.StorageType}, expected Double");
+                return false;
+            }
+            if (!p.Set(ToFeet(meters)))
+            {
+                result.Warnings.Add(
+                    $"PARAM SET REJECTED: '{paramName}' = {meters:0.###} m on {label}");
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>Read a length parameter back after regeneration and report any
+        /// drift from what was requested.</summary>
+        private static void VerifyLengthParam(
+            Element e, BuiltInParameter[] bips, string paramName,
+            double meters, string label, bool wasSet, BuildResult result)
+        {
+            if (!wasSet) return; // SetLengthParam already reported the failure
+            Parameter? p = null;
+            foreach (var bip in bips)
+            {
+                p = e.get_Parameter(bip);
+                if (p != null) break;
+            }
+            p ??= e.LookupParameter(paramName);
+            if (p == null) return;
+
+            var actualM = UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Meters);
+            if (Math.Abs(actualM - meters) > 1e-4)
+            {
+                result.Warnings.Add(
+                    $"PARAM DID NOT STICK: '{paramName}' on {label} requested " +
+                    $"{meters:0.###} m, model reads {actualM:0.###} m");
+            }
         }
 
         private static void TrySetMetresDisplayUnits(Document doc)

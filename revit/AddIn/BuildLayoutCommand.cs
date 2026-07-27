@@ -44,6 +44,8 @@ namespace BumEngine.Revit.AddIn
                     $"Built {result.Walls} walls, {result.Rooms} rooms, " +
                     $"{result.Doors} doors, {result.Windows} windows.\n" +
                     $"Saved: {result.SavedPath}";
+                if (result.Notes.Count > 0)
+                    summary += "\n\nDetails:\n- " + string.Join("\n- ", result.Notes);
                 if (result.Warnings.Count > 0)
                     summary += "\n\nWarnings:\n- " + string.Join("\n- ", result.Warnings);
 

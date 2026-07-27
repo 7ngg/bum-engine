@@ -51,6 +51,7 @@ namespace BumEngine.Revit.DA
             Console.WriteLine(
                 $"[bum-engine] built walls={result.Walls} rooms={result.Rooms} " +
                 $"doors={result.Doors} windows={result.Windows}");
+            foreach (var n in result.Notes) Console.WriteLine($"[bum-engine][info] {n}");
             foreach (var w in result.Warnings) Console.WriteLine($"[bum-engine][warn] {w}");
 
             var outPath = Path.Combine(Directory.GetCurrentDirectory(), OutputName);
