@@ -5,7 +5,9 @@ Composite cuts (so internal adjacencies hold by construction):
   children     -> Bedroom + Bathroom (middle) + Bedroom, beds along exterior wall
   kitchen_laundry -> Kitchen (kept next to Dining) + Laundry (away from Dining)
   entry        -> Foyer + Mudroom (toward the Garage)
-Terrace projects south off the Living room.
+Terrace runs along the south facade, spanning the contiguous run of
+daylight-required, non-service rooms that includes Living (Office + Living on
+the 184 fixture), with one door per room it spans.
 
 Walls are rasterised on the 0.5 m grid: a wall unit-edge exists wherever two
 grid cells belong to different rooms (interior) or a room meets the outside
@@ -716,24 +718,98 @@ def _build_windows(rooms: list[FinalRoom], recs: list[_WallRec]) -> list[Window]
     return windows
 
 
-def _build_terrace(rooms: list[FinalRoom], recs: list[_WallRec]) -> tuple[Terrace | None, Door | None]:
+def _opens_onto_terrace(room: FinalRoom) -> bool:
+    """Is this room one the terrace should serve (and get a door to)?
+
+    A room qualifies when it needs daylight (standards.requires_exterior_wall)
+    and is not a service room. That predicate, not a name list, is what
+    separates the rooms the norms want opening onto the outdoor space from the
+    ones they do not:
+      - IN:  Living, Office, Kitchen, bedrooms — all daylight-required habitable
+             rooms. SNiP 2.08.01-89's Posobie names the kitchen and the common
+             room together as the preferred connection, and Neufert's worked
+             figure shows dining AND living both opening onto the terrace.
+      - OUT: Master Bathroom, Walk-in Closet, Bathroom, Laundry (no daylight
+             requirement); Foyer/Mudroom/Corridor (circulation); Garage (needs
+             an exterior wall but is service, so the category test excludes it).
+    Because it is derived rather than hardcoded, a repack that puts a bedroom on
+    the south facade extends the terrace to it automatically.
+    """
+    std = standards.ROOMS.get(room.name)
+    return bool(std and std.requires_exterior_wall) and room.category != "service"
+
+
+def _build_terrace(
+    rooms: list[FinalRoom], recs: list[_WallRec]
+) -> tuple[Terrace | None, list[Door]]:
+    """Terrace along the south facade, spanning every qualifying room it touches.
+
+    It used to span the Living room alone and serve exactly one door. Both cited
+    sources call for an outdoor space serving several social rooms — SNiP
+    2.08.01-89 Posobie ("connect the adjacent outdoor area from the common room
+    and kitchen"), Neufert (outdoor dining in front of the dining or living
+    room, with a figure showing both). So: take the maximal CONTIGUOUS run of
+    qualifying rooms along the south facade that includes Living, and span that.
+
+    Contiguity matters — the terrace is one rectangle, so it can only be widened
+    across rooms that actually abut each other. A qualifying room separated from
+    Living by a bathroom is not reachable without either swallowing the bathroom
+    frontage or emitting a second disjoint rectangle, and the schema carries one
+    terrace rect.
+
+    Depth stays TERRACE_DEPTH_M = 3.0 m: clears the SNiP Posobie's >= 1.8 m
+    veranda depth and Neufert's 3000 mm minimum width for an outdoor dining
+    space with a bench along one wall.
+    """
     living = next((rm for rm in rooms if rm.name == "Living"), None)
     if living is None:
-        return None, None
-    x0, y0, x1, y1 = living.rect
-    terrace = Terrace(rect_m=[x0, y0 - TERRACE_DEPTH_M, x1, y0])
-    # door on Living's south exterior wall (y == y0), if present
-    li = rooms.index(living)
-    south = [
-        r
-        for r in recs
-        if r.wall.exterior and li in (r.a, r.b) and r.edge.orient == "H" and abs(r.edge.fixed - y0) < geom.EPS
+        return None, []
+
+    # The true south facade of the building, not merely Living's own y0.
+    fy0 = min(rm.rect[1] for rm in rooms)
+    on_south = [
+        rm
+        for rm in rooms
+        if abs(rm.rect[1] - fy0) < geom.EPS and _opens_onto_terrace(rm)
     ]
-    door = None
-    if south:
+    if living not in on_south:
+        # Living does not front the facade (it sits behind another room); keep
+        # the terrace on Living itself rather than inventing one elsewhere.
+        on_south = [living]
+    on_south.sort(key=lambda rm: rm.rect[0])
+
+    # maximal contiguous run containing Living
+    li = on_south.index(living)
+    lo = li
+    while lo > 0 and abs(on_south[lo - 1].rect[2] - on_south[lo].rect[0]) < geom.EPS:
+        lo -= 1
+    hi = li
+    while hi + 1 < len(on_south) and abs(on_south[hi].rect[2] - on_south[hi + 1].rect[0]) < geom.EPS:
+        hi += 1
+    span = on_south[lo : hi + 1]
+
+    x0 = span[0].rect[0]
+    x1 = span[-1].rect[2]
+    y0 = span[0].rect[1]
+    terrace = Terrace(rect_m=[x0, y0 - TERRACE_DEPTH_M, x1, y0])
+
+    # one door per room the terrace now spans, on that room's south exterior wall
+    doors: list[Door] = []
+    for rm in span:
+        idx = rooms.index(rm)
+        south = [
+            r
+            for r in recs
+            if r.wall.exterior
+            and idx in (r.a, r.b)
+            and r.edge.orient == "H"
+            and abs(r.edge.fixed - y0) < geom.EPS
+        ]
+        if not south:
+            continue
         south.sort(key=lambda r: r.edge.length, reverse=True)
-        door = _door_on(south[0], rooms, "Living", "Terrace")
-    return terrace, door
+        doors.append(_door_on(south[0], rooms, rm.name, "Terrace"))
+    return terrace, doors
 
 
 # ---------------------------------------------------------------------------
@@ -746,9 +822,8 @@ def build_layout(result: SolveResult, program: Program, wall_height_m: float = 2
     recs = _build_walls(rooms, result.plot_w_m, result.plot_d_m, wall_height_m)
     doors, entry, warnings = _build_doors(rooms, recs)
     windows = _build_windows(rooms, recs)
-    terrace, terrace_door = _build_terrace(rooms, recs)
-    if terrace_door is not None:
-        doors.append(terrace_door)
+    terrace, terrace_doors = _build_terrace(rooms, recs)
+    doors.extend(terrace_doors)
 
     return Layout(
         preset=result.preset,

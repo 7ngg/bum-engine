@@ -8,7 +8,7 @@
     "seed": 1,
     "n_rooms": 15,
     "n_walls": 46,
-    "n_doors": 15,
+    "n_doors": 16,
     "n_windows": 10,
     "rooms": [
       [
