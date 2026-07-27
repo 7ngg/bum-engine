@@ -27,7 +27,13 @@ AREA_LO = 0.85  # min zone area as fraction of its target
 AREA_HI = 1.20  # max zone area as fraction of its target
 FOOTPRINT_LO = 0.95  # min house footprint as fraction of program.target_area_m2
 FOOTPRINT_HI = 1.15  # max house footprint as fraction of program.target_area_m2
-COVERAGE_MIN = 0.95  # zones must tile at least this fraction of the footprint
+# Default floor on the fraction of the footprint the zones must tile. It is a
+# FRACTION FLOOR, not a tiling constraint: at 0.95 it permits up to 5% of the
+# footprint to be dead area, in any shape and anywhere — interior pockets AND
+# notches bitten out of the facade. Callers override it via solve(coverage_min=);
+# at 1.0 it becomes exact tiling (total_area == fp.area, since containment +
+# non-overlap already cap total_area from above), i.e. no holes and no notches.
+COVERAGE_MIN = 0.95
 DEFAULT_MAX_ASPECT = 3.0  # fallback when neither Space nor standards gives one
 TARGET_AREA_TOLERANCE = 0.15  # sum(space targets) vs target_area_m2 mismatch warn
 
@@ -150,6 +156,89 @@ def _apply_pins(m: cp_model.CpModel, zv: _ZoneVars, pins: Pins, fp: _Footprint) 
     if pins.max_y1_frac is not None:
         # zv.y1 - fp.y0 <= frac * fp.h  (fraction of the footprint's own height)
         m.Add(100 * (zv.y1 - fp.y0) <= int(round(100 * pins.max_y1_frac)) * fp.h)
+
+
+def _add_perimeter_complete(
+    m: cp_model.CpModel,
+    fp: _Footprint,
+    zv: dict,
+    W: int,
+    H: int,
+) -> None:
+    """Force every unit segment of all four footprint edges to be covered by a
+    zone, i.e. the building ENVELOPE is a clean rectangle with no notches.
+
+    Deliberately WEAKER than exact tiling: interior pockets stay legal (that is
+    COVERAGE_MIN's job). It targets the architect's complaint directly — a ragged
+    outline reads as a defect in any drawing, an interior pocket usually does not.
+
+    Encoding, per edge, for each grid position `i` along that edge:
+      in_i    <-> position i lies inside the footprint's span on that axis
+      cov_z_i  -> zone z touches this edge AND its span covers position i
+      in_i     -> OR_z cov_z_i
+    `cov` needs only the forward implication: the disjunction forces at least one
+    to be true, and a true one is then constrained to be a genuine cover, so a
+    spuriously-set bool can never fake coverage. The `touch` and `in` bools are
+    full equivalences because both directions are load-bearing.
+
+    The footprint rectangle is itself variable, which is why membership has to be
+    reified per position rather than read off a constant span. The x-membership
+    bools are shared between the south and north edges (and y between west and
+    east) — same span, same answer.
+    """
+    zones = list(zv.values())
+
+    def _touch(var, bound, hi_side: bool, tag: str):
+        """b <-> (var == bound). Containment already gives the one-sided bound,
+        so the negative branch is a plain inequality, never a reified `!=`."""
+        b = m.NewBoolVar(tag)
+        m.Add(var == bound).OnlyEnforceIf(b)
+        if hi_side:  # var <= bound by containment
+            m.Add(var <= bound - 1).OnlyEnforceIf(b.Not())
+        else:        # var >= bound by containment
+            m.Add(var >= bound + 1).OnlyEnforceIf(b.Not())
+        return b
+
+    def _inside(lo_var, hi_var, i: int, tag: str):
+        """b <-> (lo_var <= i AND hi_var >= i+1): position i is inside the span."""
+        lo = m.NewBoolVar(f"{tag}_lo")
+        m.Add(lo_var <= i).OnlyEnforceIf(lo)
+        m.Add(lo_var >= i + 1).OnlyEnforceIf(lo.Not())
+        hi = m.NewBoolVar(f"{tag}_hi")
+        m.Add(hi_var >= i + 1).OnlyEnforceIf(hi)
+        m.Add(hi_var <= i).OnlyEnforceIf(hi.Not())
+        b = m.NewBoolVar(tag)
+        m.AddBoolOr([lo.Not(), hi.Not(), b])
+        m.AddImplication(b, lo)
+        m.AddImplication(b, hi)
+        return b
+
+    # touch bools: one per zone per edge, reused across every position on it
+    touch_s = [_touch(z.y0, fp.y0, False, f"pc_tS_{k}") for k, z in enumerate(zones)]
+    touch_n = [_touch(z.y1, fp.y1, True, f"pc_tN_{k}") for k, z in enumerate(zones)]
+    touch_w = [_touch(z.x0, fp.x0, False, f"pc_tW_{k}") for k, z in enumerate(zones)]
+    touch_e = [_touch(z.x1, fp.x1, True, f"pc_tE_{k}") for k, z in enumerate(zones)]
+
+    # membership bools, shared: the south and north edges run along the same x
+    # span, west and east along the same y span.
+    in_x = [_inside(fp.x0, fp.x1, i, f"pc_inx{i}") for i in range(W)]
+    in_y = [_inside(fp.y0, fp.y1, j, f"pc_iny{j}") for j in range(H)]
+
+    def _edge(inside_bools, touch, along_lo, along_hi, tag: str):
+        for i, inside in enumerate(inside_bools):
+            covers = []
+            for k, z in enumerate(zones):
+                c = m.NewBoolVar(f"pc_{tag}_c{i}_{k}")
+                m.AddImplication(c, touch[k])
+                m.Add(along_lo(z) <= i).OnlyEnforceIf(c)
+                m.Add(along_hi(z) >= i + 1).OnlyEnforceIf(c)
+                covers.append(c)
+            m.AddBoolOr(covers).OnlyEnforceIf(inside)
+
+    _edge(in_x, touch_s, lambda z: z.x0, lambda z: z.x1, "S")
+    _edge(in_x, touch_n, lambda z: z.x0, lambda z: z.x1, "N")
+    _edge(in_y, touch_w, lambda z: z.y0, lambda z: z.y1, "W")
+    _edge(in_y, touch_e, lambda z: z.y0, lambda z: z.y1, "E")
 
 
 def _share_wall(
@@ -535,6 +624,8 @@ def solve(
     time_limit_s: float = 12.0,
     workers: int = 8,
     force_kitchen_direct: bool = True,
+    coverage_min: float | None = None,
+    perimeter_complete: bool = False,
 ) -> SolveResult:
     """Solve, retrying once if a caller-supplied `avoid` edge makes it infeasible.
 
@@ -554,6 +645,11 @@ def solve(
     because dropping it silently would ship the exact through-living
     pathology the constraint exists to prevent; the caller must opt in and
     flag the result (KITCHEN_FALLBACK_TAG).
+
+    `coverage_min` (default None -> module COVERAGE_MIN) and
+    `perimeter_complete` (default False) are the envelope-quality knobs; both
+    defaults reproduce prior behaviour exactly, adding no variables to the model.
+    See COVERAGE_MIN and _add_perimeter_complete.
     """
     # Site setbacks (Task 5 Phase 4) are mapped in the fixed internal frame where
     # street = north and garden = south, i.e. orientation "N". Rather than
@@ -581,11 +677,13 @@ def solve(
     area_warnings = check_program_area(program)  # now measured on the reconciled program
 
     result = _solve_once(
-        program, preset, seed, time_limit_s, workers, avoid, desirable, semi, force_kitchen_direct
+        program, preset, seed, time_limit_s, workers, avoid, desirable, semi, force_kitchen_direct,
+        coverage_min, perimeter_complete,
     )
     if not result.feasible and llm_avoid:
         result = _solve_once(
-            program, preset, seed, time_limit_s, workers, [], desirable, semi, force_kitchen_direct
+            program, preset, seed, time_limit_s, workers, [], desirable, semi, force_kitchen_direct,
+            coverage_min, perimeter_complete,
         )
         result.warnings.append(
             f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
@@ -604,7 +702,10 @@ def _solve_once(
     desirable_pairs: list,
     semi_pairs: list,
     force_kitchen_direct: bool = True,
+    coverage_min: float | None = None,
+    perimeter_complete: bool = False,
 ) -> SolveResult:
+    cov_min = COVERAGE_MIN if coverage_min is None else coverage_min
     spec = resolve(preset)
     W = _u(program.plot.width_m)
     H = _u(program.plot.depth_m)
@@ -900,13 +1001,30 @@ def _solve_once(
     total_area = m.NewIntVar(0, plot_cells, "total_area")
     m.Add(total_area == sum(v.area for v in zv.values()))
 
-    # Zones must tile at least COVERAGE_MIN of the footprint. Contained +
-    # non-overlapping already give total_area <= footprint. Exact tiling
-    # (== footprint) is infeasible: eight free rectangles with fixed-ish areas
-    # and the zoning pins cannot perfectly pack a rectangle, so a small (~3%)
-    # void always remains — that void is the un-modelled circulation Task 3
-    # will place. COVERAGE_MIN bounds it so no large dead region survives.
-    m.Add(100 * total_area >= int(round(100 * COVERAGE_MIN)) * fp.area)
+    # Zones must tile at least `cov_min` of the footprint. Contained +
+    # non-overlapping already give total_area <= fp.area, so at cov_min == 1.0
+    # this is exact tiling.
+    #
+    # HISTORY — the comment that used to sit here claimed exact tiling was
+    # infeasible, because "a small (~3%) void always remains: that void is the
+    # un-modelled circulation Task 3 will place". Circulation has since become a
+    # real, placed, solved zone with its own rectangle in SolveResult.rects, so
+    # the slack no longer reserves space for anything — it just admits dead
+    # pockets and facade notches (the architect's "lazimsiz girinti cixintilar").
+    # The infeasibility claim was never re-tested after that change; `coverage_min`
+    # exists so it can be.
+    m.Add(100 * total_area >= int(round(100 * cov_min)) * fp.area)
+
+    # The ENVELOPE must be a clean rectangle even where the interior is still
+    # allowed pockets. Logically strictly weaker than exact tiling — but MEASURED
+    # (roomy 184, gW_eN/gE_eN, seed 1): NOT cheaper. At the stock area band it is
+    # proven INFEASIBLE, same as exact tiling, and for the same reason: the
+    # binding constraint is AREA_LO/AREA_HI, not the packing. Isolating the edges
+    # one at a time, S / N / W / E are each satisfiable alone and S+N together,
+    # but W+E together is infeasible — the zone widths cannot reach both side
+    # facades at every row inside a [0.85, 1.20] area band.
+    if perimeter_complete:
+        _add_perimeter_complete(m, fp, zv, W, H)
 
     # coverage term now measures FOOTPRINT fill (total_area is bounded by the
     # footprint, itself bounded to ~target_area_m2 — so this no longer pays to
