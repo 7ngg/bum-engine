@@ -39,6 +39,10 @@ class RoomStandard:
     # all). Data only in this task — Task 3's spanning tree consumes it.
     no_through_traffic: bool = False
     allowed_ensuite_parents: tuple[str, ...] = ()
+    # Mechanical extraction/venting (e.g. tumble-drier vapour) -- a DIFFERENT
+    # requirement from requires_exterior_wall's daylight (KEO) test. Data
+    # only for now: no validator gate reads this yet.
+    requires_exterior_vent: bool = False
 
 
 _BEDROOM = RoomStandard(
@@ -81,8 +85,15 @@ ROOMS: dict[str, RoomStandard] = {
         # galley utility room is legitimately long and narrow (it is the thin
         # strip left when the kitchen keeps the dining side of the zone).
         min_w_m=1.8, min_h_m=2.0, min_area_m2=3.6, max_aspect=2.5,
-        # Neufert p60: tumble drier goes against an outside wall for vapour extraction.
-        requires_exterior_wall=True,
+        # NOT a daylight (KEO) requirement -- SNiP 2.08.01-89 classes Laundry
+        # as auxiliary (podsobnoe) and explicitly permits windowless service
+        # spaces on mechanical ventilation, unlike habitable rooms/kitchens.
+        # Neufert p60's "against an outside wall" is about tumble-drier vapour
+        # EXTRACTION, not KEO daylight, so it maps to requires_exterior_vent,
+        # not requires_exterior_wall. That vent requirement is recorded here
+        # but not yet enforced by any validator gate.
+        requires_exterior_wall=False,
+        requires_exterior_vent=True,
         requires_circulation_access=False,
         allowed_ensuite_parents=("Kitchen",),
     ),

@@ -9,7 +9,7 @@
     "n_rooms": 15,
     "n_walls": 53,
     "n_doors": 15,
-    "n_windows": 11,
+    "n_windows": 8,
     "rooms": [
       [
         "Bathroom",
