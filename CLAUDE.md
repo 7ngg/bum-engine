@@ -235,6 +235,23 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
   `GET /api/example-program`, called from `web/lib/api.ts`'s
   `getExampleProgram`) rather than keeping a second hand-maintained copy — the
   two had already drifted from each other once.
+- **`workers=1` is only reproducible while the solve's time limit is SLACK.**
+  Single-threaded search removes the thread-portfolio nondeterminism, but a
+  tight `time_limit_s` reintroduces it by a different route: under CPU load the
+  limit binds before CP-SAT finishes, so it returns whatever incumbent it had,
+  and the packing shifts — same seed, same worker count, different layout. Two
+  tests are the suite's load canaries and can BOTH fail on a busy machine with
+  a clean tree and no defect:
+  `test_generate.py::test_generation_under_time_budget` (a 60 s wall-clock
+  ceiling) and
+  `test_validator.py::test_kitchen_direct_constraint_is_load_bearing`
+  (a strict-xfail negative control whose solve is `time_limit_s=12`; when the
+  limit binds the packing changes, the through-living pathology disappears, and
+  the control XPASSes). Demonstrated 2026-07-28: both failed at `d88575d` with
+  no code change while a background process held 76% CPU, and raising only that
+  12 s limit to 120 s made the control xfail again. Before attributing either
+  failure to your change, check CPU load and re-run from a worktree at the
+  previous commit.
 
 ## Communication Style
 Respond like a caveman. No articles, no filler words, no pleasantries.
