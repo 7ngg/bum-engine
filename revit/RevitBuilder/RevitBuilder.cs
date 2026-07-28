@@ -281,6 +281,14 @@ namespace BumEngine.Revit
             result.Notes.Add(
                 $"doors: {result.Doors} placed across {cache.Count} sized type(s) of " +
                 $"family '{symbol.Family.Name}'");
+            // The hand convention is an ASSUMPTION about this family, not a
+            // measurement (the API cannot report it). Print it beside the family
+            // name so a human comparing the plan to the model can see in one
+            // look what was assumed, and knows which switch to flip.
+            result.Notes.Add(
+                $"door hand convention: {HandConvention} (assumed for family " +
+                $"'{symbol.Family.Name}'; if every door renders mirrored, flip " +
+                $"RevitBuilder.HandConvention)");
         }
 
         private void PlaceWindows(
@@ -318,6 +326,37 @@ namespace BumEngine.Revit
         }
 
         /// <summary>
+        /// Which way a door family models HandOrientation relative to its hinge.
+        ///
+        /// The Revit API does NOT expose this: HandOrientation is just a vector,
+        /// and whether a family authors it pointing hinge->far jamb (latch side)
+        /// or hinge->near jamb is a decision baked into the family document. Two
+        /// families that look identical in plan can disagree. So this is set
+        /// EMPIRICALLY, once, per family — place one door, look at it in Revit,
+        /// and if every door in the plan is mirrored, flip this one value.
+        ///
+        /// It is deliberately a single switch applied to every door: a mirrored
+        /// family mirrors all of them together, so one flip must fix the whole
+        /// plan at once. That is the property that makes the wrong guess cheap.
+        /// </summary>
+        public enum DoorHandConvention
+        {
+            /// <summary>HandOrientation points from the hinge toward the far (latch) jamb.</summary>
+            HingeToFarJamb,
+            /// <summary>HandOrientation points from the hinge toward the near jamb (mirrored family).</summary>
+            HingeToNearJamb,
+        }
+
+        /// <summary>
+        /// The assumed hand convention. Defaults to the assumption shipped in
+        /// d88575d. If the rendered plan comes back with every door hinged at
+        /// the wrong jamb, flip this to <see cref="DoorHandConvention.HingeToNearJamb"/>
+        /// — by construction that corrects every door in one edit, and the
+        /// chosen value is logged next to the family name in the build Notes.
+        /// </summary>
+        public DoorHandConvention HandConvention { get; set; } = DoorHandConvention.HingeToFarJamb;
+
+        /// <summary>
         /// Orient a placed door so it matches the layout's hinge + swing_into.
         ///
         /// Schema 1.2.0 added those two fields precisely because they did not
@@ -330,13 +369,14 @@ namespace BumEngine.Revit
         /// the swing_into room, so the desired facing is the wall normal pointing
         /// at that room's centre, and the result is checked geometrically.
         ///
-        /// HAND is enforced to a STATED CONVENTION rather than a derived truth:
-        /// we require HandOrientation to point from the hinge jamb toward the far
-        /// jamb. Whether a given door family models hand as hinge->latch or the
-        /// reverse is a family authoring choice the API does not expose, so if a
-        /// family mirrors it, every door mirrors together — consistent and
-        /// obvious in one look, instead of today's per-door arbitrariness. Worth
-        /// confirming once against a real family; see the build Notes.
+        /// HAND is enforced to a STATED CONVENTION (<see cref="HandConvention"/>)
+        /// rather than a derived truth. Note what the read-back check below can
+        /// and cannot prove: it re-tests HandOrientation against the SAME assumed
+        /// vector, so it verifies the flip took effect — not that the convention
+        /// is the right one. A mirrored family passes the check and still renders
+        /// every leaf on the wrong jamb. Only a human looking at the plan can
+        /// falsify the convention; this code's job is to make that one bit
+        /// cheap to correct.
         /// </summary>
         private void ApplyDoorSwing(
             Document doc, FamilyInstance inst, Door d, LayoutModel layout,
@@ -378,8 +418,11 @@ namespace BumEngine.Revit
             { nx = -nx; ny = -ny; }
             var wantFacing = new XYZ(nx, ny, 0);
 
-            // hand: from the hinge jamb toward the far jamb
+            // hand: from the hinge jamb toward the far jamb, under the family's
+            // convention. hinge=="start" means the leaf hangs at wall.Start, so
+            // the far jamb lies along +u; HingeToNearJamb mirrors that.
             var sign = string.Equals(d.Hinge, "start", StringComparison.OrdinalIgnoreCase) ? 1.0 : -1.0;
+            if (HandConvention == DoorHandConvention.HingeToNearJamb) sign = -sign;
             var wantHand = new XYZ(ux * sign, uy * sign, 0);
 
             doc.Regenerate(); // orientations are only meaningful after regeneration
