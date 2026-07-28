@@ -259,6 +259,7 @@ namespace BumEngine.Revit
 
             var cache = new Dictionary<(int, int), FamilySymbol>();
             var legacyDoors = 0;
+            var orientedDoors = 0;
             foreach (var d in all)
             {
                 if (!walls.TryGetValue(d.WallId, out var host))
@@ -271,7 +272,7 @@ namespace BumEngine.Revit
                     d.WidthM, d.HeightM, cache, result);
                 var loc = new XYZ(ToFeet(d.Center[0]), ToFeet(d.Center[1]), level.Elevation);
                 var inst = doc.Create.NewFamilyInstance(loc, sized, host, level, StructuralType.NonStructural);
-                ApplyDoorSwing(doc, inst, d, layout, result, ref legacyDoors);
+                ApplyDoorSwing(doc, inst, d, layout, result, ref legacyDoors, ref orientedDoors);
                 result.Doors++;
             }
             if (legacyDoors > 0)
@@ -281,14 +282,25 @@ namespace BumEngine.Revit
             result.Notes.Add(
                 $"doors: {result.Doors} placed across {cache.Count} sized type(s) of " +
                 $"family '{symbol.Family.Name}'");
-            // The hand convention is an ASSUMPTION about this family, not a
-            // measurement (the API cannot report it). Print it beside the family
-            // name so a human comparing the plan to the model can see in one
-            // look what was assumed, and knows which switch to flip.
+            // PROOF OF EXECUTION, not just of intent. The old version of this
+            // note printed the convention unconditionally, so it appeared even
+            // when every door took the legacy early-return and ApplyDoorSwing
+            // oriented nothing — which made it useless for answering "did the
+            // deployed add-in actually run this code, or is it stale?".
+            // orientedDoors counts doors that completed the orient path, so
+            // "0/N oriented" is now an unambiguous negative.
             result.Notes.Add(
-                $"door hand convention: {HandConvention} (assumed for family " +
-                $"'{symbol.Family.Name}'; if every door renders mirrored, flip " +
-                $"RevitBuilder.HandConvention)");
+                $"door swing: {orientedDoors}/{result.Doors} doors oriented, hand convention " +
+                $"{HandConvention}, family '{symbol.Family.Name}' — 0 oriented means this " +
+                $"build did not apply swing data (stale add-in, or layout older than schema 1.2.0)");
+            // Which binary is actually loaded. A human comparing a render to the
+            // source needs this to rule out a stale DLL before reading anything
+            // else in the plan as evidence.
+            var asm = typeof(RevitBuilder).Assembly;
+            var stamp = "unknown";
+            try { stamp = System.IO.File.GetLastWriteTime(asm.Location).ToString("yyyy-MM-dd HH:mm:ss"); }
+            catch { /* single-file / in-memory load: leave it unknown */ }
+            result.Notes.Add($"builder assembly: {asm.GetName().Version} built {stamp}");
         }
 
         private void PlaceWindows(
@@ -348,13 +360,35 @@ namespace BumEngine.Revit
         }
 
         /// <summary>
-        /// The assumed hand convention. Defaults to the assumption shipped in
-        /// d88575d. If the rendered plan comes back with every door hinged at
-        /// the wrong jamb, flip this to <see cref="DoorHandConvention.HingeToNearJamb"/>
-        /// — by construction that corrects every door in one edit, and the
-        /// chosen value is logged next to the family name in the build Notes.
+        /// UNVERIFIED DEFAULT. This value has never been observed in Revit.
+        ///
+        /// The Revit API does not expose how a family models hand, so the only
+        /// way to settle it is empirically, from the first render in which
+        /// ApplyDoorSwing ACTUALLY RUNS. No render so far qualifies: the builds
+        /// the architect reviewed all predate d88575d, the commit that
+        /// introduced ApplyDoorSwing, and the add-in has never been deployed
+        /// (no BumEngine add-in under either Revit Addins directory; the only
+        /// build outputs in the tree are local compile checks). In those renders
+        /// Revit derived hand and facing from the host wall alone, arbitrarily
+        /// with respect to the room — which already explains both reported
+        /// symptoms, leaves not folding against walls AND doors fouling each
+        /// other, without any mirrored hand. So there was no mirrored render to
+        /// infer this from, and neither value is currently supported by
+        /// evidence.
+        ///
+        /// HOW TO SETTLE IT: deploy the add-in, confirm from the build Notes
+        /// that doors were actually oriented (see the "door swing:" line — it
+        /// reports oriented/total, and 0 oriented means this code did not run),
+        /// then look at the plan. IF EVERY DOOR IS HINGED AT THE FAR END of its
+        /// wall — leaf opening into the middle of the room instead of folding
+        /// back against the return wall — FLIP THIS VALUE to HingeToFarJamb.
+        /// If only some doors are wrong, the convention is not the variable and
+        /// the fault lies elsewhere; do not flip it.
+        ///
+        /// Whatever the answer, it is evidence about ONE family, not a
+        /// universal truth, which is why this stays configurable.
         /// </summary>
-        public DoorHandConvention HandConvention { get; set; } = DoorHandConvention.HingeToFarJamb;
+        public DoorHandConvention HandConvention { get; set; } = DoorHandConvention.HingeToNearJamb;
 
         /// <summary>
         /// Orient a placed door so it matches the layout's hinge + swing_into.
@@ -365,22 +399,29 @@ namespace BumEngine.Revit
         /// alone — uniformly, and arbitrarily with respect to the room. That is
         /// the "qapilar divara acilmir" / colliding-swings complaint.
         ///
-        /// FACING is unambiguous and fully verifiable: the leaf must sweep into
-        /// the swing_into room, so the desired facing is the wall normal pointing
-        /// at that room's centre, and the result is checked geometrically.
+        /// FACING is MEASURED, never assumed. FacingOrientation is a real
+        /// world-space vector and the swing_into room's centroid is a real
+        /// world-space point, so the question "does this leaf sweep into that
+        /// room?" is answered by one dot product against the vector from the
+        /// door to that centroid — no family convention enters into it. The
+        /// wall is no longer consulted for facing at all (it used to supply a
+        /// normal to compare against, which was correct but was a derivation
+        /// that could be got wrong for a door whose host wall is mis-identified).
+        /// The read-back re-tests that same geometric truth, so unlike the hand
+        /// check it proves the door really does open into the right room.
         ///
-        /// HAND is enforced to a STATED CONVENTION (<see cref="HandConvention"/>)
-        /// rather than a derived truth. Note what the read-back check below can
-        /// and cannot prove: it re-tests HandOrientation against the SAME assumed
-        /// vector, so it verifies the flip took effect — not that the convention
-        /// is the right one. A mirrored family passes the check and still renders
-        /// every leaf on the wrong jamb. Only a human looking at the plan can
-        /// falsify the convention; this code's job is to make that one bit
-        /// cheap to correct.
+        /// HAND remains a STATED CONVENTION (<see cref="HandConvention"/>),
+        /// because nothing in the API exposes how a family models it. Note what
+        /// the hand read-back can and cannot prove: it re-tests HandOrientation
+        /// against the SAME assumed vector, so it verifies the flip took effect,
+        /// not that the convention is right. A mirrored family passes it and
+        /// still renders every leaf on the wrong jamb. Only a human looking at a
+        /// rendered plan can falsify that bit — which is exactly how the current
+        /// default was arrived at.
         /// </summary>
         private void ApplyDoorSwing(
             Document doc, FamilyInstance inst, Door d, LayoutModel layout,
-            BuildResult result, ref int legacyDoors)
+            BuildResult result, ref int legacyDoors, ref int orientedDoors)
         {
             if (!d.HasSwing)
             {
@@ -403,7 +444,7 @@ namespace BumEngine.Revit
                 return;
             }
 
-            // wall direction, and the normal that points at the target room
+            // wall direction — needed for HAND only; facing no longer uses it.
             double ux = wall.End[0] - wall.Start[0], uy = wall.End[1] - wall.Start[1];
             var len = Math.Sqrt(ux * ux + uy * uy);
             if (len < 1e-9)
@@ -413,10 +454,18 @@ namespace BumEngine.Revit
             }
             ux /= len; uy /= len;
 
-            var nx = -uy; var ny = ux;
-            if ((target.Value.X - d.Center[0]) * nx + (target.Value.Y - d.Center[1]) * ny < 0)
-            { nx = -nx; ny = -ny; }
-            var wantFacing = new XYZ(nx, ny, 0);
+            // The direction the leaf must sweep: door centre -> centre of the
+            // room named by swing_into. World-space, measured, convention-free.
+            var toRoom = new XYZ(
+                ToFeet(target.Value.X - d.Center[0]),
+                ToFeet(target.Value.Y - d.Center[1]), 0);
+            if (toRoom.GetLength() < 1e-9)
+            {
+                result.Warnings.Add(
+                    $"SWING SKIPPED: door {d.From}->{d.To} sits exactly on the centre of " +
+                    $"'{d.SwingInto}'; no facing direction can be derived");
+                return;
+            }
 
             // hand: from the hinge jamb toward the far jamb, under the family's
             // convention. hinge=="start" means the leaf hangs at wall.Start, so
@@ -427,7 +476,12 @@ namespace BumEngine.Revit
 
             doc.Regenerate(); // orientations are only meaningful after regeneration
 
-            if (inst.FacingOrientation.DotProduct(wantFacing) < 0)
+            // FACING: dot(FacingOrientation, toRoom) > 0 means the leaf already
+            // sweeps toward the room it is supposed to open into. <= 0 includes
+            // the exactly-perpendicular case, which is not "good enough" — it
+            // means the reading is degenerate and the flip should still be tried.
+            var facingDotBefore = inst.FacingOrientation.DotProduct(toRoom);
+            if (facingDotBefore <= 0)
             {
                 if (inst.CanFlipFacing) inst.flipFacing();
                 else result.Warnings.Add($"SWING: door {d.From}->{d.To} cannot flip facing (family forbids it)");
@@ -439,18 +493,23 @@ namespace BumEngine.Revit
             }
 
             doc.Regenerate();
+            orientedDoors++;   // reached the orient path and applied it
 
-            // A flip returning without throwing is not proof it took — read back,
-            // exactly like the PARAM DID NOT STICK check on opening sizes.
-            if (inst.FacingOrientation.DotProduct(wantFacing) < 0)
+            // A flip returning without throwing is not proof it took — read back.
+            // For facing this re-tests the GEOMETRIC truth (does the leaf sweep
+            // into the room?), so a pass here is a real guarantee, not a
+            // restatement of an assumption.
+            var facingDotAfter = inst.FacingOrientation.DotProduct(toRoom);
+            if (facingDotAfter <= 0)
                 result.Warnings.Add(
-                    $"SWING DID NOT STICK: door {d.From}->{d.To} ({d.WallId}) should open into " +
-                    $"'{d.SwingInto}' (facing {Fmt(wantFacing)}) but the model reads " +
-                    $"{Fmt(inst.FacingOrientation)}");
+                    $"SWING DID NOT STICK: door {d.From}->{d.To} ({d.WallId}) must open into " +
+                    $"'{d.SwingInto}' (direction {Fmt(toRoom)}) but faces {Fmt(inst.FacingOrientation)} " +
+                    $"— dot {facingDotBefore:0.###} before flip, {facingDotAfter:0.###} after");
             if (inst.HandOrientation.DotProduct(wantHand) < 0)
                 result.Warnings.Add(
                     $"SWING DID NOT STICK: door {d.From}->{d.To} ({d.WallId}) hinge '{d.Hinge}' " +
-                    $"wants hand {Fmt(wantHand)} but the model reads {Fmt(inst.HandOrientation)}");
+                    $"wants hand {Fmt(wantHand)} ({HandConvention}) but the model reads " +
+                    $"{Fmt(inst.HandOrientation)}");
         }
 
         /// <summary>Centre of the room named by swing_into, or of the terrace.</summary>
