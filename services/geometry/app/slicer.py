@@ -696,6 +696,27 @@ def _build_entry(rooms: list[FinalRoom], recs: list[_WallRec], warnings: list[st
 
 SWING_ARC_SEGMENTS = 16  # ~1 mm sagitta error at a 0.9 m leaf; well under GRID_M
 
+# Neufert, Architects' Data — the norms this module encodes:
+#   "doors which open into corridor must not cause obstruction within corridor"
+#       -> R1: a door between circulation and anything else opens into the
+#          NON-circulation side, always. Not negotiable, not a preference.
+#   "when located in corner of rm door should be hinged at side nearer corner";
+#   "doors should be hung with hinges toward corner"
+#       -> R5: hinge at the nearer wall end, so the open leaf folds flat against
+#          the perpendicular return wall.
+#   "Doorswings should not conflict with each other"
+#       -> R6: zero arc-arc overlap, hard.
+#   "In small rm, such as wc cubicles, side-hung doors should open outwards or
+#    sliding doors should be used" — tempered by Neufert's own warning about
+#    outward swings into corridors being hazardous
+#       -> R4: outward only where the receiving space is not circulation, or is
+#          wide enough (>= CORRIDOR_CLEAR_MIN_M) to absorb the leaf.
+#   Corridors >= 1200 mm so a user can stand clear to open a door
+#       -> CORRIDOR_CLEAR_MIN_M, the R4 gate and the R2 tie-break metric.
+
+CORRIDOR_CLEAR_MIN_M = 1.2   # Neufert corridor minimum; also the R4 outward gate
+SMALL_ROOM_MARGIN_M = 0.5    # R4: leaf width + this much clear depth, or swing out
+
 
 def _wall_unit(wall: Wall) -> tuple[float, float]:
     sx, sy = wall.start
@@ -730,6 +751,23 @@ def _nearer_end(door: Door, wall: Wall) -> str:
     ds = math.dist(door.center, wall.start)
     de = math.dist(door.center, wall.end)
     return "start" if ds <= de else "end"
+
+
+def _clear_depth(door: Door, wall: Wall, rect: geom.Rect) -> float:
+    """Clear dimension of `rect` measured PERPENDICULAR to the door's host wall.
+
+    This is the depth the leaf has to sweep into — the number both R2 ("which
+    side can absorb the leaf") and R4 ("is this room too small to swing inward")
+    actually care about. A room can be long and still unable to take a door if
+    it is narrow across the doorway, so the wall-parallel dimension is the wrong
+    measure and is deliberately not used.
+    """
+    ux, uy = _wall_unit(wall)
+    # perpendicular axis: if the wall runs along x, the depth is in y, and vice
+    # versa. Walls here are always axis-aligned (the rasterizer emits no others).
+    if abs(ux) > abs(uy):
+        return rect[3] - rect[1]
+    return rect[2] - rect[0]
 
 
 def swing_wedge(
@@ -786,6 +824,83 @@ def _convex_overlap(p: list, q: list, tol: float = 1e-9) -> bool:
     return True
 
 
+def _choose_facing(
+    door: Door,
+    wall: Wall,
+    cat_by_name: dict[str, str],
+    rect_by_name: dict[str, geom.Rect],
+    warnings: list[str],
+) -> tuple[str, bool, str]:
+    """Which side the leaf opens into — R1..R4. Returns (target, locked, why).
+
+    `locked` means the facing is a NORM, not a preference: collision resolution
+    (R6) may flip the hinge but must never flip a locked facing.
+
+    This replaces the pre-1.3.0 rule "open into the access tree's child". That
+    rule was wrong for a reason worth recording: the access tree is rooted at
+    the Foyer, so it emits edges like Foyer->Corridor whose CHILD is itself
+    circulation — and the door then opened into the corridor, exactly what
+    Neufert forbids. Corridor->Bedroom came out right only by accident of
+    direction. Facing is now derived from what the two sides ARE, so it no
+    longer depends on which way the tree happened to be walked.
+    """
+    sides = [s for s in (door.to, door.from_) if s in rect_by_name]
+    if not sides:
+        return door.to, True, "no adjoining rect (degenerate)"
+    if len(sides) == 1:
+        # the main entry: `from` is OUTSIDE and has no rect. An entry leaf
+        # cannot sweep onto the street, so this is forced, not chosen.
+        return sides[0], True, "only one side is an enclosed space (entry door)"
+
+    circ_sides = [s for s in sides if cat_by_name.get(s) == "circ"]
+
+    if len(circ_sides) == 1:
+        # R1 (hard): never open into circulation.
+        target = next(s for s in sides if s not in circ_sides)
+        locked = True
+        why = f"R1 {circ_sides[0]} is circulation, so it opens into {target}"
+    elif len(circ_sides) == 2:
+        # R2: both sides circulation — the leaf goes where there is room for it.
+        depths = {s: _clear_depth(door, wall, rect_by_name[s]) for s in sides}
+        target = max(sides, key=lambda s: (depths[s], s))
+        other = next(s for s in sides if s != target)
+        locked = False
+        why = (f"R2 both sides circulation; {target} has {depths[target]:.2f} m clear "
+               f"vs {other} {depths[other]:.2f} m")
+    else:
+        # R3: neither side is circulation — keep entering the tree's child.
+        target = door.to if door.to in rect_by_name else sides[0]
+        locked = False
+        why = f"R3 neither side is circulation; opens into the room entered ({target})"
+
+    # R4: a small wet room cannot take its own leaf (Neufert's wc-cubicle case).
+    # Outward is allowed only where the receiving space is not circulation, or
+    # is a corridor wide enough to absorb the leaf.
+    if cat_by_name.get(target) == "wet":
+        depth = _clear_depth(door, wall, rect_by_name[target])
+        if depth < door.width_m + SMALL_ROOM_MARGIN_M:
+            other = next((s for s in sides if s != target), None)
+            if other is None:
+                warnings.append(
+                    f"door {door.from_}->{door.to} on {door.wall_id}: {target} is only "
+                    f"{depth:.2f} m clear (needs {door.width_m + SMALL_ROOM_MARGIN_M:.2f} m) "
+                    f"and has no other side to open into")
+            else:
+                other_ok = (cat_by_name.get(other) != "circ"
+                            or _clear_depth(door, wall, rect_by_name[other]) >= CORRIDOR_CLEAR_MIN_M)
+                if other_ok:
+                    why = (f"R4 {target} is only {depth:.2f} m clear, too small for an "
+                           f"inward leaf; swings out into {other}")
+                    target, locked = other, True
+                else:
+                    warnings.append(
+                        f"door {door.from_}->{door.to} on {door.wall_id}: {target} is only "
+                        f"{depth:.2f} m clear so the leaf should swing out, but {other} is "
+                        f"circulation under {CORRIDOR_CLEAR_MIN_M} m — neither direction "
+                        f"satisfies Neufert; left opening into {target}, needs a sliding leaf")
+    return target, locked, why
+
+
 def _assign_swings(
     rooms: list[FinalRoom],
     recs: list[_WallRec],
@@ -796,37 +911,45 @@ def _assign_swings(
 ) -> None:
     """Set `hinge` and `swing_into` on every door, resolving swing collisions.
 
-    Per door, candidate options in preference order:
-        (nearer end, into `to`)  <- the rule: hinge against the wall, open into
-        (farther end, into `to`)    the room being entered
-        (nearer end, into `from`)  <- outward swing, the small-room exception
-        (farther end, into `from`)
-    Hinge flips are tried BEFORE facing flips: the facing rule (open into the
-    destination, never back into circulation) is a rule with a stated exception,
-    whereas the hinge end is a preference, so the cheaper concession is the hinge.
+    Facing comes from `_choose_facing` (R1..R4) and is a norm; the hinge end
+    (R5, nearer end so the leaf folds against the return wall) is a preference.
+    So the option list per door is, in precedence order:
+        (nearer end, rule facing)   <- R5 satisfied
+        (farther end, rule facing)  <- R6 conceded the hinge
+        (nearer end, other side)    <- only when the facing is NOT locked
+        (farther end, other side)
+    R6 therefore tries every hinge combination before any facing flip, and a
+    facing locked by R1/R4 is simply never offered an alternative — the norm is
+    enforced by construction rather than by the search happening to prefer it.
 
-    An option is admissible only if the whole wedge fits inside the target room
-    — that check IS the small-room exception and the no-crossing-a-wall rule at
-    once. Two doors can only foul each other if they swing into the same space,
-    so collisions are detected per target room.
+    An option is admissible only if the whole wedge fits inside the target room,
+    which is simultaneously the no-crossing-a-wall check.
     """
     wall_by_id = {r.wall.id: r.wall for r in recs}
     rect_by_name: dict[str, geom.Rect] = {rm.name: rm.rect for rm in rooms}
+    cat_by_name: dict[str, str] = {rm.name: rm.category for rm in rooms}
     if terrace is not None:
         rect_by_name["Terrace"] = tuple(terrace.rect_m)
+        cat_by_name["Terrace"] = "outdoor"
     circ_names = {rm.name for rm in rooms if rm.category == "circ"}
 
     all_doors = list(doors) + [entry]
     options: list[list[tuple]] = []  # per door: [(hinge, target, wedge), ...]
+    facings: list[tuple[str, bool, str]] = []
 
     for d in all_doors:
         wall = wall_by_id.get(d.wall_id)
         opts: list[tuple] = []
-        if wall is not None:
+        if wall is None:
+            facings.append((d.to, True, "host wall missing"))
+        else:
+            target, locked, why = _choose_facing(d, wall, cat_by_name, rect_by_name, warnings)
+            facings.append((target, locked, why))
             near = _nearer_end(d, wall)
             far = "end" if near == "start" else "start"
-            for target in (d.to, d.from_):
-                rect = rect_by_name.get(target)
+            order = [target] if locked else [target, *(s for s in (d.to, d.from_) if s != target)]
+            for cand in order:
+                rect = rect_by_name.get(cand)
                 if rect is None:
                     continue  # "OUTSIDE" has no rect; never swing there
                 for hinge in (near, far):
@@ -836,20 +959,26 @@ def _assign_swings(
                         continue
                     if not _wedge_fits(hp, along, into, d.width_m, rect):
                         continue
-                    opts.append((hinge, target, swing_wedge(hp, along, into, d.width_m)))
+                    opts.append((hinge, cand, swing_wedge(hp, along, into, d.width_m)))
         if not opts:
             # nothing admissible: keep the rule-preferred answer and say so
             near = _nearer_end(d, wall) if wall is not None else "start"
+            target = facings[-1][0]
             warnings.append(
-                f"door {d.from_}->{d.to} on {d.wall_id}: no swing fits any adjoining "
-                f"room without crossing a wall; defaulted to hinge {near}, opening into {d.to}"
+                f"door {d.from_}->{d.to} on {d.wall_id}: no swing fits {target} "
+                f"without crossing a wall; defaulted to hinge {near}, opening into {target}"
             )
-            opts = [(near, d.to, [])]
+            opts = [(near, target, [])]
         options.append(opts)
 
     choice = [0] * len(all_doors)
 
     def collisions(sel: list[int]) -> list[tuple[int, int]]:
+        # ALL pairs. Two wedges in different rooms are in practice separated by
+        # the wall between them, but testing only same-room pairs would make
+        # "zero arc-arc overlaps" a claim about the shortcut rather than about
+        # the geometry. At 17 doors the full O(n^2) is free, so assert the
+        # stronger property directly.
         hits = []
         for i in range(len(all_doors)):
             hi_, ti, wi = options[i][sel[i]]
@@ -857,8 +986,8 @@ def _assign_swings(
                 continue
             for j in range(i + 1, len(all_doors)):
                 hj, tj, wj = options[j][sel[j]]
-                if not wj or ti != tj:
-                    continue  # different rooms cannot foul each other
+                if not wj:
+                    continue
                 if _convex_overlap(wi, wj):
                     hits.append((i, j))
         return hits
@@ -896,16 +1025,23 @@ def _assign_swings(
                 f"door {d.from_}->{d.to} on {d.wall_id}: hinge moved to the FAR end of "
                 f"the wall (not the nearer one) to clear a swing collision"
             )
-        if target != d.to:
+        ruled, locked, _why = facings[k]
+        if target != ruled:
             warnings.append(
-                f"door {d.from_}->{d.to} on {d.wall_id}: opens OUTWARD into {target} "
-                f"(the inward swing does not fit {d.to} or collided)"
+                f"door {d.from_}->{d.to} on {d.wall_id}: facing overridden to {target} "
+                f"(the rule chose {ruled}) to clear a swing collision"
             )
-            if target in circ_names:
-                warnings.append(
-                    f"door {d.from_}->{d.to} swings out into circulation ({target}) - "
-                    f"review: an outward leaf here obstructs the corridor"
-                )
+        # R1 is enforced by construction above (a locked facing is never offered
+        # an alternative), so this can now only fire for an unlocked R2/R3 door.
+        # It stays as a backstop: if it ever prints, the invariant broke.
+        # A LOCKED facing is exempt: the entry door's only enclosed side is the
+        # Foyer, and an entry leaf sweeping onto the street is not the fix.
+        if (not locked and target in circ_names
+                and not (d.from_ in circ_names and d.to in circ_names)):
+            warnings.append(
+                f"door {d.from_}->{d.to} swings into circulation ({target}) - "
+                f"review: an outward leaf here obstructs the corridor"
+            )
 
     for i, j in collisions(choice):
         a, b = all_doors[i], all_doors[j]
