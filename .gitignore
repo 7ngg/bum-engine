@@ -16,6 +16,9 @@ node_modules/
 .next/
 out/
 
+# Local dev stack (scripts/dev.ps1)
+scripts/.logs/
+
 # Build artifacts
 *.rvt
 *.zip
