@@ -137,6 +137,74 @@ def corridor_target_m2(footprint_target_m2: float, door_count: int) -> float:
 
 
 
+# --- guest WC (уборная) ------------------------------------------------------
+# Architect review, round 3, point 5: "Layihede umumi sanitar qovshaqi yoxdur.
+# Yeni umumi tualet. Eve gelen qonaqlar yataq otagindaki tualetden istifade
+# edecekler?" — the project has no common sanitary unit; will guests use the
+# toilet in the bedroom? He is right, and it is a PROGRAM gap: the brief never
+# asked for one, so nothing downstream could have produced it.
+#
+# NORM BASIS — SNiP 2.08.01-89 Posobie, "Санитарные узлы", cl. 3.5: two basic
+# types of sanitary accommodation, РАЗДЕЛЬНЫЙ (a block of bathroom + уборная)
+# and СОВМЕЩЁННЫЙ (combined). A separate уборная is what a dwelling of three or
+# more habitable rooms is expected to carry, which is the threshold used below.
+#
+# This is DERIVED like the corridor, not asked for like a bedroom — see
+# inject_guest_wc for why that is the right seam.
+HABITABLE_ZONES: set[ZoneId] = {"living", "dining", "office", "master_suite", "children"}
+GUEST_WC_ROOM = "Guest WC"
+GUEST_WC_MIN_HABITABLE = 3
+
+
+def guest_wc_target_m2() -> float:
+    """Area budget for the уборная, in the terms the SLICER can actually build.
+
+    standards["Guest WC"] states the norm-derived minimum (1.2 x 1.3 m), but the
+    slicer ceil-snaps every minimum onto GRID_M = 0.5, so the smallest WC this
+    engine can emit is 1.5 x 1.5 = 2.25 m2. Budgeting the norm figure instead
+    would under-fund the zone by 0.7 m2 and hand the shortfall to the packing as
+    an unexplained squeeze, so the budget is the grid-realisable number and the
+    reason is written down here rather than inferred later."""
+    from . import slicer  # lazy: slicer imports standards, which imports nothing
+
+    s = standards.ROOMS[GUEST_WC_ROOM]
+    return slicer._ceil_snap(s.min_w_m) * slicer._ceil_snap(s.min_h_m)
+
+
+def needs_guest_wc(program: Program) -> bool:
+    """A dwelling of GUEST_WC_MIN_HABITABLE+ habitable rooms owes its guests a
+    WC they can reach without transiting the bedroom wing. Counted over ZONES
+    the brief actually carries, so a two-room studio brief is left alone."""
+    return sum(1 for z in HABITABLE_ZONES if program.space(z) is not None) >= GUEST_WC_MIN_HABITABLE
+
+
+def inject_guest_wc(program: Program) -> tuple[Program, list[str]]:
+    """Fund a guest WC inside the ENTRY zone by raising that zone's target.
+
+    Unlike circulation this injects no new Space: the WC is a third sub-room of
+    the entry zone (Mudroom | Guest WC | Foyer, see slicer._slice_entry), so the
+    thing that has to change is the entry zone's AREA BUDGET, not the zone list.
+    Doing it here rather than in the brief keeps the rule where the other
+    norm-derived geometry already lives, and keeps it out of reach of the LLM —
+    which is the point: a real user writing a text brief will no more ask for a
+    guest WC than they ask for a corridor.
+
+    No-op when the entry zone is absent (nothing to host it) or the program is
+    too small to owe one."""
+    entry = program.space("entry")
+    if entry is None or not needs_guest_wc(program):
+        return program, []
+    add = guest_wc_target_m2()
+    new_spaces = [
+        s.model_copy(update={"target_m2": s.target_m2 + add}) if s.id == "entry" else s
+        for s in program.spaces
+    ]
+    return program.model_copy(update={"spaces": new_spaces}), [
+        f"injected guest WC into the entry zone (+{add:.2f} m2, "
+        f"entry target {entry.target_m2:.1f} -> {entry.target_m2 + add:.1f} m2)"
+    ]
+
+
 def inject_circulation(program: Program) -> tuple[Program, list[str]]:
     """Return (program with a derived `circulation` Space appended, warnings).
     No-op if the program already carries one. The corridor's target is derived

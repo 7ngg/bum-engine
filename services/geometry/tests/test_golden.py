@@ -74,6 +74,11 @@ EXPECTED_ROOM_NAMES = {
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
     "Bedroom 2", "Bedroom 3", "Bathroom",
     "Office", "Foyer", "Mudroom", "Garage", "Corridor",
+    # 16th room, added with the guest WC (architect review round 3, point 5):
+    # zones.inject_guest_wc derives it from SNiP 2.08.01-89 Posobie cl. 3.5 the
+    # way the corridor is derived, and slicer._slice_entry cuts it as the entry
+    # zone's third room (Mudroom | Guest WC | Foyer).
+    "Guest WC",
 }
 
 

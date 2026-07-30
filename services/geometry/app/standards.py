@@ -145,6 +145,47 @@ ROOMS: dict[str, RoomStandard] = {
         requires_circulation_access=True,
         allowed_ensuite_parents=(),
     ),
+    "Guest WC": RoomStandard(
+        # The common уборная (SNiP 2.08.01-89 Posobie, "Санитарные узлы",
+        # cl. 3.5). The Posobie distinguishes a РАЗДЕЛЬНЫЙ sanitary unit (a
+        # block of bathroom + уборная) from a СОВМЕЩЁННЫЙ (combined) one; this
+        # is the уборная half, provided on its own so a guest is not sent
+        # through the bedroom wing.
+        #
+        # DERIVED (not a quoted room minimum). The only ROOM-size figure the
+        # Posobie clause gives is the FIXTURE it must hold: "уборная -
+        # помещение, рассчитанное на установку унитаза с габаритом в плане не
+        # менее 670x400 мм" — a pan of at least 670 x 400 mm. The room minimum
+        # is derived from that plus Neufert's activity space: 400 + 2x200 mm
+        # lateral = 800 mm wide, 670 + 600 mm in front of the pan = 1270 mm
+        # deep. That lands on the 800 x 1200 mm separate-WC figure conventional
+        # in this norm family, which is the cross-check, not the source.
+        #
+        # TWO PROJECT FLOORS then raise it above the norm, and both are worth
+        # knowing about before anyone "fixes" these numbers downward:
+        #   - validator.MIN_ROOM_M = 1.2 hard-rejects ANY room under 1.2 m on
+        #     either axis. A norm-legal 0.80 m WC would fail our own validator.
+        #   - GRID_M = 0.5 means the slicer ceil-snaps every minimum, so 1.2 ->
+        #     1.5 and the smallest WC this engine can actually build is
+        #     1.5 x 1.5 = 2.25 m2.
+        # So the built room is ~1.9x the norm's floor area. That is a property
+        # of the 0.5 m grid, not generosity, and it is why min_area_m2 below is
+        # the DERIVED 1.2 x 1.3 rather than anything larger — the table states
+        # the norm, and the grid does what the grid does.
+        min_w_m=1.2, min_h_m=1.3, min_area_m2=1.56, max_aspect=2.0,
+        # Подсобное (auxiliary) room: SNiP 2.08.01-89 classes it with the
+        # service spaces, not the habitable ones, so no KEO daylight duty —
+        # exactly the Laundry precedent (51fcd4d). Mechanical extraction
+        # instead, which is what requires_exterior_vent records.
+        requires_exterior_wall=False,
+        requires_exterior_vent=True,
+        # THE ENTIRE POINT of this room: a guest must reach it without
+        # transiting a bedroom. Entered from circulation, never an ensuite.
+        requires_circulation_access=True,
+        allowed_ensuite_parents=(),
+        # A WC is never a passage.
+        no_through_traffic=True,
+    ),
     "Office": RoomStandard(
         # Neufert p44 table 1a, "other habitable room": min dim 2.44 m, min area 7.43 m2.
         min_w_m=2.44, min_h_m=2.44, min_area_m2=7.43, max_aspect=2.0,

@@ -45,7 +45,7 @@ import pytest
 from app.slicer import (
     MAX_SECONDARY_DOORS,
     SECONDARY_MIN_FREE_WALL_M,
-    SECONDARY_MIN_HOPS,
+    FUNCTIONAL_PAIRS,
     _convex_overlap,
     _hinge_frame,
     _into_normal,
@@ -125,12 +125,23 @@ def test_secondary_door_exists_between_kitchen_and_living(roomy_program, preset)
 
 @pytest.mark.parametrize("preset", PRESETS)
 def test_kitchen_to_dining_is_at_most_two_hops(roomy_program, preset):
-    """Was 4 hops at HEAD (Kitchen->Foyer->Corridor->Living->Dining)."""
+    """The requirement itself (<= 2) is FUNCTIONAL_PAIRS' Kitchen<->Dining entry.
+
+    The TREE-ONLY baseline below is a measured number and it moved with the
+    guest-WC repack, which is worth knowing rather than hiding:
+        before the WC   4 hops   Kitchen -> Foyer -> Corridor -> Living -> Dining
+        with the WC     3 hops   Kitchen -> Corridor -> Living -> Dining
+    The WC takes the entry zone's south strip, which is where the Foyer used to
+    meet the Kitchen, so the Kitchen re-parents onto the Corridor -- a shorter
+    and better route even before the secondary door is added. Either way the
+    requirement is met only WITH the door, which is what the two asserts
+    together pin down.
+    """
     layout = _layout(roomy_program, preset)
     g = _graph(layout)
     assert _hops(g, "Kitchen", "Dining") <= 2
-    # and the improvement is entirely the secondary door's doing
-    assert _hops(_graph(layout, include_secondary=False), "Kitchen", "Dining") == 4
+    # and the last hop of the improvement is the secondary door's doing
+    assert _hops(_graph(layout, include_secondary=False), "Kitchen", "Dining") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -183,12 +194,33 @@ def test_secondary_doors_are_capped_and_leave_usable_walls(roomy_program, preset
             )
 
 
-def test_secondary_hop_threshold_is_three():
-    """E2's threshold is read off the measured graph, not assumed: on the 184
-    fixture Kitchen->Living is 3 hops and Kitchen->Dining is 4. At 2 the rule
-    would also fire on pairs one room apart (Corridor<->Kitchen, Bedroom
-    2<->Bathroom), buying a step and costing a wall."""
-    assert SECONDARY_MIN_HOPS == 3
+def test_every_functional_pair_carries_a_citation():
+    """FUNCTIONAL_PAIRS replaced the old SECONDARY_MIN_HOPS = 3 threshold, which
+    was calibrated by reading hop counts off ONE tree and did not survive the
+    guest-WC repack (see slicer.FunctionalPair for the full reasoning). The
+    requirement is now stated on the JOURNEY, and every entry must name the norm
+    it comes from — a pair without a citation is a heuristic wearing a costume,
+    which is exactly what was removed."""
+    assert FUNCTIONAL_PAIRS, "the table must not be empty; it is the only way in"
+    for fp in FUNCTIONAL_PAIRS:
+        assert fp.max_hops >= 1
+        assert len(fp.why) > 80, f"{fp.a}<->{fp.b} has no real citation"
+        assert "SNiP" in fp.why or "Neufert" in fp.why
+
+
+@pytest.mark.parametrize("preset", PRESETS)
+def test_every_functional_pair_is_satisfied(roomy_program, preset):
+    """The table is a gate, not a wish list: whatever is in it must hold on the
+    finished plan."""
+    layout = _layout(roomy_program, preset)
+    g = _graph(layout)
+    for fp in FUNCTIONAL_PAIRS:
+        if fp.a not in g or fp.b not in g:
+            continue  # a sliced-out room imposes nothing
+        d = _hops(g, fp.a, fp.b)
+        assert 0 <= d <= fp.max_hops, (
+            f"{preset}: {fp.a}<->{fp.b} is {d} hops apart, needs <= {fp.max_hops}\n{fp.why}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -303,13 +335,14 @@ def test_narrow_door_warning_fires_for_the_corridor_dead_end(roomy_program, pres
 
     On the 184 fixture this fires for exactly the doors at the Corridor's south
     end, where the spine dead-ends against two rooms and each gets only part of
-    its 2.0-2.5 m width:
-      gW_eN  Corridor 2.0 m wide -> Living 1.00 m + Master Bedroom 1.00 m,
-             so BOTH doors come out at 0.80 m;
-      gE_eN  Corridor 2.5 m wide -> Living 1.00 m + Master Bedroom 1.50 m,
-             so only Corridor->Living is undersized.
+    its width. The guest-WC repack MIRRORED which preset gets the wider spine,
+    so the expected sets swapped -- measured, not assumed:
+      before the WC   gW_eN corridor 2.0 m -> Living 1.00 + Master 1.00: BOTH narrow
+                      gE_eN corridor 2.5 m -> Living 1.00 + Master 1.50: Living only
+      with the WC     gW_eN corridor 2.5 m -> Living 1.00 + Master 1.50: Living only
+                      gE_eN corridor 2.0 m -> Living 1.00 + Master 1.00: BOTH narrow
     That is the corridor's dead-end T (architect review round 3, point 3),
-    separately scoped.
+    separately scoped, and it is unchanged in kind by the WC.
 
     WHEN THIS TEST STOPS FIRING, the T has been fixed and the check in
     validator.py should be PROMOTED from warnings.append to errors.append --
@@ -328,10 +361,99 @@ def test_narrow_door_warning_fires_for_the_corridor_dead_end(roomy_program, pres
         if d.width_m < DOOR_CLEAR_WIDTH_M - 1e-9
     }
     expected = {
-        "gW_eN": {("Corridor", "Living"), ("Corridor", "Master Bedroom")},
-        "gE_eN": {("Corridor", "Living")},
+        "gW_eN": {("Corridor", "Living")},
+        "gE_eN": {("Corridor", "Living"), ("Corridor", "Master Bedroom")},
     }[preset]
     assert offenders == expected, f"{preset}: unexpected sub-standard doors {offenders}"
     assert len(narrow) == len(expected)
     # still only a warning -- the plan must remain exportable
     assert res.ok, f"{preset}: the narrow-leaf check must not be a hard error yet"
+
+
+# ---------------------------------------------------------------------------
+# 6. the guest WC (architect review round 3, point 5)
+# ---------------------------------------------------------------------------
+#
+# "Layihede umumi sanitar qovshaqi yoxdur. Yeni umumi tualet. Eve gelen qonaqlar
+# yataq otagindaki tualetden istifade edecekler? Ve laundry de bu tualeta yaxin
+# veya bitishik olmalidir." -- the project has no common sanitary unit; will
+# guests use the toilet in the bedroom? And the laundry should be near it.
+#
+# It was a PROGRAM gap: the brief never asked for one, so nothing downstream
+# could produce it. zones.inject_guest_wc now derives it from the norm the way
+# the corridor is derived, and slicer._slice_entry cuts it as the entry zone's
+# third room.
+
+
+@pytest.mark.parametrize("preset", PRESETS)
+def test_guest_wc_exists_and_opens_off_circulation(roomy_program, preset):
+    """SNiP 2.08.01-89 Posobie, "Sanitarnye uzly", cl. 3.5 -- the razdelnyy
+    sanitary unit's ubornaya, provided so a guest is not sent through the
+    bedroom wing. The whole point is the access path, so that is what is
+    asserted: parent is circulation, and NO private room lies on the route from
+    the entry."""
+    from app.validator import access_tree
+
+    layout = _layout(roomy_program, preset)
+    names = [rm.name for rm in layout.rooms]
+    assert "Guest WC" in names, f"{preset}: no guest WC was injected"
+
+    edges, reached, _root = access_tree(layout.rooms)
+    parent = {c: p for p, c in edges}
+    wc = names.index("Guest WC")
+    assert wc in reached, f"{preset}: the guest WC is unreachable"
+
+    path, cur = [wc], wc
+    while cur in parent:
+        cur = parent[cur]
+        path.append(cur)
+    path.reverse()
+
+    cats = {rm.name: rm.category for rm in layout.rooms}
+    assert cats[names[parent[wc]]] == "circ", (
+        f"{preset}: guest WC opens off {names[parent[wc]]!r}, which is not circulation"
+    )
+    private = [names[i] for i in path if names[i] != "Guest WC" and cats[names[i]] == "private"]
+    assert not private, (
+        f"{preset}: a guest reaches the WC through {private} -- "
+        f"exactly the complaint. Path: {[names[i] for i in path]}"
+    )
+
+
+@pytest.mark.parametrize("preset", PRESETS)
+def test_guest_wc_joins_the_wet_core(roomy_program, preset):
+    """The architect asked for the laundry "near or adjacent" to the WC; the
+    Posobie's rural-house guidance puts the bath near the kitchen and entrance
+    and says the ubornaya should follow it, "being functionally tied to the bath
+    located there".
+
+    ASSERTED AS MEASURED, not as hoped: the WC touches the Laundry over only
+    0.50 m -- genuinely adjacent, but below ACCESS_DOOR_M (0.9), so no door
+    could ever be hosted there. It touches the KITCHEN over 2.50 m, which is the
+    connection the Posobie clause actually names. So the test requires contact
+    with the wet core and records both numbers; it deliberately does NOT claim a
+    door-capable laundry wall, because there isn't one.
+    """
+    from app import geom
+
+    layout = _layout(roomy_program, preset)
+    rect = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
+    wc = rect["Guest WC"]
+
+    def shared(other):
+        e = geom.shared_edge(wc, rect[other]) if other in rect else None
+        return e.length if e else 0.0
+
+    laundry, kitchen = shared("Laundry"), shared("Kitchen")
+    assert laundry > 0 or kitchen > 0, (
+        f"{preset}: the guest WC touches neither Laundry nor Kitchen -- it has "
+        f"left the wet core entirely"
+    )
+    assert kitchen >= 0.9 - 1e-9, (
+        f"{preset}: WC<->Kitchen is only {kitchen:.2f} m; the Posobie ties the "
+        f"ubornaya to the kitchen-side bath"
+    )
+    assert laundry == pytest.approx(0.5), (
+        f"{preset}: WC<->Laundry measured {laundry:.2f} m, not the 0.50 m this "
+        f"test was written against -- re-read the packing before adjusting it"
+    )

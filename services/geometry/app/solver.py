@@ -581,6 +581,14 @@ def solve(
     # solver's area windows and the target-adherence term are measured against a
     # self-consistent program with the hall carved out of the habitable budget.
     program, circ_warnings = Z.inject_circulation(program)
+    # The guest WC (уборная) is funded the same way and for the same reason: a
+    # norm requirement of the PLAN, not of the brief. It raises the entry zone's
+    # target rather than adding a zone, so it must land BEFORE reconcile too —
+    # otherwise the rescale would hand the WC's area straight back to the other
+    # habitable rooms. Unlike the corridor the entry zone is NOT held: the WC is
+    # part of the habitable budget and should shrink with everything else if the
+    # brief is over-subscribed.
+    program, wc_warnings = Z.inject_guest_wc(program)
     program, recon_warnings = reconcile.reconcile_program(program, held=("garage", "circulation"))
 
     llm_avoid = program.adjacency.avoid
@@ -600,7 +608,7 @@ def solve(
         result.warnings.append(
             f"solve was infeasible with requested avoid-adjacency {llm_avoid}; retried with it dropped"
         )
-    result.warnings = circ_warnings + recon_warnings + area_warnings + result.warnings
+    result.warnings = circ_warnings + wc_warnings + recon_warnings + area_warnings + result.warnings
     return result
 
 

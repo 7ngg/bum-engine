@@ -237,48 +237,116 @@ def _slice_kitchen(
     ]
 
 
+def _split_off_wc(
+    zone: str, rect: geom.Rect, along_x: bool
+) -> list[FinalRoom] | None:
+    """Carve the Guest WC off the SOUTH (or WEST) end of the Foyer remainder.
+
+    Returns [Guest WC, Foyer] in that order, or None if the remainder cannot
+    give the WC its minimum without dropping the Foyer below its own.
+
+    WHICH END, and why it is not arbitrary: the Foyer has two jobs the WC must
+    not take from it — it carries the front door (so it needs the STREET-facing
+    exterior wall, +y in the solver's fixed frame) and it fronts the corridor.
+    Both presets pin the entry zone to the north edge, so the WC takes the y0
+    (south) end and the Foyer keeps the north wall and its corridor contact.
+    South is also where kitchen_laundry sits, which is what puts the WC against
+    the wet cluster the architect and the Posobie both ask for — see
+    _slice_entry. On an N/S-cut zone the same reasoning runs along x and the WC
+    takes the x0 end.
+    """
+    x0, y0, x1, y1 = rect
+    wc = standards.ROOMS["Guest WC"]
+    foy = standards.ROOMS["Foyer"]
+    if along_x:
+        depth = _ceil_snap(wc.min_w_m)  # WC X-depth
+        if (x1 - x0) - depth < foy.min_w_m or (y1 - y0) < max(foy.min_h_m, wc.min_h_m):
+            return None
+        wx = x0 + depth
+        return [
+            FinalRoom("Guest WC", "wet", zone, (x0, y0, wx, y1)),
+            FinalRoom("Foyer", "circ", zone, (wx, y0, x1, y1)),
+        ]
+    depth = _ceil_snap(wc.min_h_m)  # WC Y-depth
+    if (y1 - y0) - depth < foy.min_h_m or (x1 - x0) < max(foy.min_w_m, wc.min_w_m):
+        return None
+    wy = y0 + depth
+    return [
+        FinalRoom("Guest WC", "wet", zone, (x0, y0, x1, wy)),
+        FinalRoom("Foyer", "circ", zone, (x0, wy, x1, y1)),
+    ]
+
+
 def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
     # `side` is the direction of the Garage. entry uses the BOTH-axis-legal
     # intersection table (legal_pairs), so its slice is legal on either axis and
     # the side may be read straight from geometry (_side_of) in slice_zones — no
     # cut-axis solver var is needed here (unlike kitchen_laundry).
+    #
+    # THREE rooms since the guest-WC task: Mudroom (garage-side buffer) |
+    # Guest WC | Foyer. The уборная is a sub-room of the entry zone rather than
+    # a zone of its own because that is what makes BOTH of its requirements hold
+    # at ROOM level by construction: it is cut adjacent to the Foyer, which is
+    # circulation, so a guest reaches it without passing a bedroom; and it sits
+    # on the zone's south flank, against kitchen_laundry. Zone-level adjacency
+    # has produced four separate defects in this project, so neither guarantee
+    # is left to a zone-level share constraint.
+    #
+    # RECORDED TENSION: the Posobie's zoning guidance groups the sanitary unit
+    # with the BEDROOM group, while its rural-house guidance puts the bath near
+    # the kitchen and entrance and says the уборная should follow the bath. The
+    # architect's ruling is binding and matches the second reading, so the WC
+    # goes by the entrance. If the first reading ever wins, this is the function
+    # to change.
+    #
+    # The zone's legal (w, h) table is NOT hand-updated for the third room:
+    # legal_pairs() probes this very function (_slice_probe -> _legal_1), so the
+    # envelope re-derives itself. zones.inject_guest_wc funds the area.
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
     mud = standards.ROOMS["Mudroom"]
     foy = standards.ROOMS["Foyer"]
     if side is None:
         return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
-    # Mudroom (garage-side buffer) gets its min strip (ceil-snapped); Foyer takes
-    # the rest.
+    # Mudroom (garage-side buffer) gets its min strip (ceil-snapped); the Foyer
+    # remainder then gives up its far end to the WC, if it can afford to.
     if side in ("W", "E"):
         depth = _ceil_snap(mud.min_w_m)  # Mudroom X-depth
         if (w - depth) < foy.min_w_m or h < max(foy.min_h_m, mud.min_h_m):
             return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
         if side == "W":
             mx = x0 + depth
-            return [
-                FinalRoom("Mudroom", "service", r.zone, (x0, y0, mx, y1)),
-                FinalRoom("Foyer", "circ", r.zone, (mx, y0, x1, y1)),
-            ]
-        mx = x1 - depth
-        return [
-            FinalRoom("Foyer", "circ", r.zone, (x0, y0, mx, y1)),
-            FinalRoom("Mudroom", "service", r.zone, (mx, y0, x1, y1)),
-        ]
+            mud_room = FinalRoom("Mudroom", "service", r.zone, (x0, y0, mx, y1))
+            rest = (mx, y0, x1, y1)
+        else:
+            mx = x1 - depth
+            mud_room = FinalRoom("Mudroom", "service", r.zone, (mx, y0, x1, y1))
+            rest = (x0, y0, mx, y1)
+        # W/E cut -> the Mudroom strip runs the full depth, so the WC splits the
+        # remainder along y (south end), keeping the Foyer's north wall free.
+        split = _split_off_wc(r.zone, rest, along_x=False)
+        if split is None:
+            return [mud_room, FinalRoom("Foyer", "circ", r.zone, rest)] if side == "W" else [
+                FinalRoom("Foyer", "circ", r.zone, rest), mud_room]
+        return [mud_room, *split] if side == "W" else [*split, mud_room]
     depth = _ceil_snap(mud.min_h_m)  # Mudroom Y-depth
     if (h - depth) < foy.min_h_m or w < max(foy.min_w_m, mud.min_w_m):
         return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
     if side == "S":
         my = y0 + depth
-        return [
-            FinalRoom("Mudroom", "service", r.zone, (x0, y0, x1, my)),
-            FinalRoom("Foyer", "circ", r.zone, (x0, my, x1, y1)),
-        ]
-    my = y1 - depth
-    return [
-        FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, my)),
-        FinalRoom("Mudroom", "service", r.zone, (x0, my, x1, y1)),
-    ]
+        mud_room = FinalRoom("Mudroom", "service", r.zone, (x0, y0, x1, my))
+        rest = (x0, my, x1, y1)
+    else:
+        my = y1 - depth
+        mud_room = FinalRoom("Mudroom", "service", r.zone, (x0, my, x1, y1))
+        rest = (x0, y0, x1, my)
+    # N/S cut -> the Mudroom strip runs the full width, so the WC splits the
+    # remainder along x (west end).
+    split = _split_off_wc(r.zone, rest, along_x=True)
+    if split is None:
+        return [mud_room, FinalRoom("Foyer", "circ", r.zone, rest)] if side == "S" else [
+            FinalRoom("Foyer", "circ", r.zone, rest), mud_room]
+    return [mud_room, *split] if side == "S" else [*split, mud_room]
 
 
 _SIMPLE_NAME: dict[str, tuple[str, Category]] = {
@@ -822,27 +890,87 @@ def _position_doors(
 # _build_doors hosts exactly one door per access-tree edge. A spanning tree over
 # n rooms has n-1 edges and no cycles, so every trip between two rooms is forced
 # up and back down the tree — which is why carrying a plate from the Kitchen to
-# the Dining room walks Kitchen -> Foyer -> Corridor -> Living -> Dining even
-# though the Kitchen and the Living room share a 2.5 m wall. Real dwellings have
-# rings, not pure trees.
+# the Dining room walks Kitchen -> Corridor -> Living -> Dining even though the
+# Kitchen and the Living room share a 2.5 m wall. Real dwellings have rings, not
+# pure trees.
 #
 # NORM BASIS — SNiP 2.08.01-89 Posobie, apartment-planning section:
 #   "Возможно создание дополнительных связей между смежными помещениями,
 #    улучшающих функциональную и пространственную организацию квартир"
 #   (additional connections between adjacent rooms may be created, improving
 #   the functional and spatial organisation of apartments).
-# The same section treats the separation this fixes as a DEFECT needing a
-# remedy: where the main dining zone sits outside the kitchen and has no direct
-# connection to it, the kitchen must carry a supplementary 2-3 seat dining area.
-# A direct connection is the better answer, and the norm permits it explicitly.
+# That clause PERMITS the ring. What makes a particular ring REQUIRED is the
+# separate clause carried by each FUNCTIONAL_PAIRS entry below.
 #
 # Secondary doors are strictly ADDITIVE. validator.access_tree is recomputed
 # from room adjacency, never from the door list, so adding one cannot change the
 # tree, the reachability gate, or the kitchen-direct invariant. Delete every
 # door with secondary=True and the plan is exactly as connected as before — that
-# is the invariant, and tests/test_slicer.py asserts it directly.
+# is the invariant, and tests/test_secondary_doors.py asserts it directly.
 
-SECONDARY_MIN_HOPS = 3       # see _secondary_doors for why 3 and not 2
+
+@dataclass(frozen=True)
+class FunctionalPair:
+    """Two rooms the norms require to be within `max_hops` doors of each other.
+
+    THE QUANTITY THAT IS THRESHOLDED HERE IS THE POINT. The first cut of this
+    module gated a secondary door on how far apart the two rooms IT JOINS were
+    (SECONDARY_MIN_HOPS = 3), a number calibrated by reading hop counts off one
+    tree. That number does not survive a repack. Adding the guest WC re-parents
+    the Kitchen from the Foyer to the Corridor — an improvement in itself — and
+    that alone moved Kitchen<->Living from 3 hops to 2, disqualifying the door
+    even though the door still delivers the identical result on the journey that
+    motivated it:
+
+        HEAD:     Kitchen->Living 3 hops,  Kitchen->Dining 4,  with door 2
+        with WC:  Kitchen->Living 2 hops,  Kitchen->Dining 3,  with door 2
+
+    A threshold whose meaning changes when the tree changes is thresholding the
+    wrong quantity. So the requirement is stated on the JOURNEY SHORTENED, not
+    on the PAIR JOINED: a door earns its place by bringing some named pair
+    within its required distance, whatever route it takes to do so. That is
+    stable across repacks, because it is a statement about the finished plan
+    rather than about one traversal of it.
+
+    `why` is the citation, not a comment: every pair here has to come from a
+    norm, and the reason travels with the requirement so a later reader can
+    check it rather than trust it.
+    """
+
+    a: str
+    b: str
+    max_hops: int
+    why: str
+
+
+# The named requirements. Seeded with the one clause the architect's round-3
+# review turned up; the structure is a table so the next clause is a new row
+# with its own citation rather than another special case in the selector.
+FUNCTIONAL_PAIRS: tuple[FunctionalPair, ...] = (
+    FunctionalPair(
+        "Kitchen", "Dining", 2,
+        "SNiP 2.08.01-89 Posobie, apartment-planning section: where the main "
+        "dining zone sits OUTSIDE the kitchen and has NO DIRECT CONNECTION to "
+        "it, the kitchen must carry a supplementary 2-3 seat dining area. This "
+        "engine has no furniture model and so cannot provide that remedy; the "
+        "connection is the only one of the two it can build, which makes the "
+        "connection a requirement here rather than a preference. 2 hops = "
+        "Kitchen -> one intervening room -> Dining, i.e. the food crosses at "
+        "most one other room.",
+    ),
+)
+
+# The generic path is GONE. Until this commit a candidate could also qualify by
+# being >= SECONDARY_MIN_HOPS (3) from its partner and touching a habitable room.
+# Measured on both feasible presets with the WC in place, it admitted NOTHING:
+# every candidate it reached — Dining<->Garage, Living<->Laundry, Living<->Master
+# Bathroom / Walk-in Closet, Kitchen<->Guest WC — was already refused by the
+# ensuite or social-room rules, and the only pairs it uniquely reached
+# (Laundry<->Garage, Laundry<->Mudroom) failed its own habitable-end test. It was
+# dead machinery resting on a judgement call ("at least one end must be
+# habitable") that no norm backed, so it is deleted rather than carried. A
+# connection now earns its place one way only: by satisfying a cited requirement
+# in FUNCTIONAL_PAIRS.
 MAX_SECONDARY_DOORS = 2      # a house with rings, not an open plan by accident
 SECONDARY_MIN_FREE_WALL_M = 1.5  # usable furniture run both rooms must keep
 
@@ -936,19 +1064,15 @@ def _secondary_doors(
 
     Eligibility, all of which must hold:
       E1 the two rooms share an interior wall >= ACCESS_DOOR_M;
-      E2 they are >= SECONDARY_MIN_HOPS apart in the CURRENT door graph;
-      E3 the connection serves a habitable room;
+      F  adding it brings a VIOLATED FunctionalPair within its required hop
+         distance — the only way in, and the reason it is stable across repacks
+         (see FunctionalPair for what changed and why);
       E4 no access rule is broken in either direction (_secondary_refused);
       E5 both rooms keep a >= SECONDARY_MIN_FREE_WALL_M furniture run;
-      E6 the new leaf's swing collides with nothing (the existing all-pairs
-         detector in _assign_swings, run on the full door set).
+      E6 the new leaf's swing collides with nothing, and forces no concession
+         from the existing all-pairs detector in _assign_swings.
 
-    E2's threshold is 3, read off the measured graph rather than assumed: on the
-    184 fixture Kitchen->Living is 3 hops and Kitchen->Dining is 4. At 2 the rule
-    would also fire on pairs that are already one room apart (Corridor<->Kitchen,
-    Bedroom 2<->Bathroom), where a second door buys a step and costs a wall. 3 is
-    the first threshold that admits the defect the architect reported and nothing
-    that is merely convenient.
+    Ranked by requirements fixed, then total hops saved, then host-wall width.
     """
     from collections import deque
     from .validator import ACCESS_DOOR_M
@@ -962,24 +1086,36 @@ def _secondary_doors(
             graph[a].add(b)
             graph[b].add(a)
 
-    def hops(src: int) -> dict[int, int]:
+    def hops(src: int, extra: tuple[int, int] | None = None) -> dict[int, int]:
+        """BFS from `src`, optionally with one candidate edge added. `extra` is
+        how a candidate is scored on the journey it would shorten rather than on
+        the two rooms it happens to join."""
         seen = {src: 0}
         q = deque([src])
         while q:
             cur = q.popleft()
-            for nb in sorted(graph[cur]):
+            nbrs = set(graph[cur])
+            if extra is not None:
+                if cur == extra[0]:
+                    nbrs.add(extra[1])
+                elif cur == extra[1]:
+                    nbrs.add(extra[0])
+            for nb in sorted(nbrs):
                 if nb not in seen:
                     seen[nb] = seen[cur] + 1
                     q.append(nb)
         return seen
 
-    def habitable(k: int) -> bool:
-        # The norm's stated benefit is to the dwelling's FUNCTIONAL organisation,
-        # so at least one end must be a habitable/social room. This is what keeps
-        # service-to-service shortcuts (Laundry<->Garage, Laundry<->Mudroom) out:
-        # they pass every access rule, but no cited norm asks for them and each
-        # one still costs an opening.
-        return rooms[k].category in ("living", "office") or rooms[k].name == "Kitchen"
+    # Which named requirements does the plan currently FAIL? A pair whose rooms
+    # are not both present imposes nothing (a sliced-out room is legitimate).
+    violated: list[tuple[FunctionalPair, int, int, int]] = []
+    for fp in FUNCTIONAL_PAIRS:
+        ia, ib = idx_of.get(fp.a), idx_of.get(fp.b)
+        if ia is None or ib is None:
+            continue
+        d0 = hops(ia).get(ib, -1)
+        if d0 < 0 or d0 > fp.max_hops:
+            violated.append((fp, ia, ib, d0))
 
     report: list[dict] = []
     ranked: list[tuple] = []
@@ -992,23 +1128,37 @@ def _secondary_doors(
             if j in graph[i]:
                 continue  # already a tree door here
             h = di.get(j, -1)
+            # F: does this candidate FIX a violated requirement?
+            fixes = []
+            for fp, ia, ib, d0 in violated:
+                d1 = hops(ia, extra=(i, j)).get(ib, -1)
+                if 0 <= d1 <= fp.max_hops and (d0 < 0 or d1 < d0):
+                    fixes.append({"pair": f"{fp.a}<->{fp.b}", "max_hops": fp.max_hops,
+                                  "before": d0, "after": d1})
             row = {"a": rooms[i].name, "b": rooms[j].name, "wall_id": rec.wall.id,
                    "wall_len": round(rec.edge.length, 2), "hops": h,
-                   "benefit": (h - 1) if h > 0 else 0, "accepted": False, "reason": ""}
-            if h < SECONDARY_MIN_HOPS:
-                row["reason"] = f"E2 only {h} hops apart (needs >= {SECONDARY_MIN_HOPS})"
-            elif not (habitable(i) or habitable(j)):
-                row["reason"] = "E3 neither room is habitable/social; no norm asks for this link"
+                   "fixes": fixes, "accepted": False, "reason": ""}
+            if not fixes:
+                row["reason"] = (
+                    "F fixes no violated functional requirement"
+                    + (f" ({len(violated)} outstanding)" if violated else " (none outstanding)")
+                )
             else:
                 refused = _secondary_refused(rooms, i, j)
                 row["reason"] = f"E4 {refused}" if refused else ""
             report.append(row)
             if not row["reason"]:
-                ranked.append((-row["benefit"], -rec.edge.length, rooms[i].name, rooms[j].name, i, j, rec, row))
+                gain = sum(f["before"] - f["after"] for f in fixes if f["before"] > 0)
+                ranked.append((
+                    -len(fixes), -gain,   # most requirements fixed, biggest hop saving
+                    -rec.edge.length,     # then the widest host wall
+                    rooms[i].name, rooms[j].name,
+                    i, j, rec, row,
+                ))
 
-    ranked.sort(key=lambda t: t[:4])
+    ranked.sort(key=lambda t: t[:5])
     accepted: list[Door] = []
-    for _b, _l, _na, _nb, i, j, rec, row in ranked:
+    for _nf, _g, _l, _na, _nb, i, j, rec, row in ranked:
         if len(accepted) >= MAX_SECONDARY_DOORS:
             row["reason"] = f"capped at {MAX_SECONDARY_DOORS} secondary doors"
             continue

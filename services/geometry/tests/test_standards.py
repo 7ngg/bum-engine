@@ -12,6 +12,9 @@ EXPECTED_ROOM_NAMES = {
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
     "Bedroom", "Bedroom 2", "Bedroom 3", "Children Bedroom", "Bathroom",
     "Office", "Foyer", "Mudroom", "Garage", "Corridor",
+    # The уборная, emitted by slicer._slice_entry as the entry zone's third
+    # room. SNiP 2.08.01-89 Posobie, "Санитарные узлы", cl. 3.5.
+    "Guest WC",
 }
 
 
