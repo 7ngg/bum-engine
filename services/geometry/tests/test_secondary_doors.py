@@ -287,3 +287,51 @@ def test_r7_never_moves_the_front_door(roomy_program, preset):
     along = 0 if abs(wall.start[0] - wall.end[0]) > 1e-9 else 1
     expected = lo[along] + jamb + layout.entry.width_m / 2
     assert layout.entry.center[along] == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# 5. sub-standard door leaves (validator warning, pending the corridor fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("preset", PRESETS)
+def test_narrow_door_warning_fires_for_the_corridor_dead_end(roomy_program, preset):
+    """TRIPWIRE. slicer._door_on sets width = min(0.9, wall_len - 0.2), so a host
+    wall under 1.10 m silently yields a leaf below standards.DOOR_CLEAR_WIDTH_M
+    (0.9 m, the wheelchair doorset minimum) and below the ACCESS_DOOR_M the
+    access graph assumed when it awarded the edge.
+
+    On the 184 fixture this fires for exactly the doors at the Corridor's south
+    end, where the spine dead-ends against two rooms and each gets only part of
+    its 2.0-2.5 m width:
+      gW_eN  Corridor 2.0 m wide -> Living 1.00 m + Master Bedroom 1.00 m,
+             so BOTH doors come out at 0.80 m;
+      gE_eN  Corridor 2.5 m wide -> Living 1.00 m + Master Bedroom 1.50 m,
+             so only Corridor->Living is undersized.
+    That is the corridor's dead-end T (architect review round 3, point 3),
+    separately scoped.
+
+    WHEN THIS TEST STOPS FIRING, the T has been fixed and the check in
+    validator.py should be PROMOTED from warnings.append to errors.append --
+    a 0.80 m leaf is then a real defect rather than a known consequence.
+    """
+    from app.standards import DOOR_CLEAR_WIDTH_M
+    from app.validator import validate
+
+    layout = _layout(roomy_program, preset)
+    res = validate(layout, roomy_program)
+    narrow = [w for w in res.warnings if "clear doorset minimum" in w]
+    assert narrow, "the narrow-leaf tripwire stopped firing -- promote it to a hard error"
+
+    offenders = {
+        (d.from_, d.to) for d in list(layout.doors) + [layout.entry]
+        if d.width_m < DOOR_CLEAR_WIDTH_M - 1e-9
+    }
+    expected = {
+        "gW_eN": {("Corridor", "Living"), ("Corridor", "Master Bedroom")},
+        "gE_eN": {("Corridor", "Living")},
+    }[preset]
+    assert offenders == expected, f"{preset}: unexpected sub-standard doors {offenders}"
+    assert len(narrow) == len(expected)
+    # still only a warning -- the plan must remain exportable
+    assert res.ok, f"{preset}: the narrow-leaf check must not be a hard error yet"

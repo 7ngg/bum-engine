@@ -147,6 +147,27 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
             errors.append(f"door {d.from_}->{d.to} on wall {d.wall_id!r} only {wall_len:.2f} m (<0.8)")
         if d.width_m > wall_len + geom.EPS:
             errors.append(f"door {d.from_}->{d.to} width {d.width_m} exceeds wall {wall_len:.2f} m")
+        # 6b. Sub-standard leaf. slicer._door_on sets
+        #     width = min(DOOR_W, max(0.7, wall_len - 0.2)),
+        # so ANY host wall under 1.10 m silently yields a leaf below
+        # standards.DOOR_CLEAR_WIDTH_M (0.9 m, the wheelchair doorset minimum)
+        # and below validator.ACCESS_DOOR_M (also 0.9), which is the width the
+        # access graph ASSUMED was available when it awarded the edge. Nothing
+        # caught it: the check above only gates on wall_len >= 0.8.
+        #
+        # WARNING, NOT AN ERROR, and deliberately so: it currently fires on the
+        # 184 fixture, where the Corridor's 2.0 m south end is split into two
+        # 1.00 m walls and both doors come out at 0.80 m. That is the corridor's
+        # dead-end T (architect review round 3, point 3), not a door defect, and
+        # it is separately scoped. PROMOTE THIS TO errors.append() once that T is
+        # fixed and the warning stops firing on the standard fixtures — at which
+        # point a 0.80 m leaf really is a defect rather than a known consequence.
+        if d.width_m < standards.DOOR_CLEAR_WIDTH_M - geom.EPS:
+            warnings.append(
+                f"door {d.from_}->{d.to} on wall {d.wall_id!r} is only {d.width_m:.2f} m wide "
+                f"(< {standards.DOOR_CLEAR_WIDTH_M} m clear doorset minimum); its host wall is "
+                f"{wall_len:.2f} m, too short for a full-width leaf"
+            )
 
     # 7. required adjacencies present (DoD): kitchen-dining, dining-living, master-ensuite
     _require_adjacent(layout, "Kitchen", "Dining", warnings)
