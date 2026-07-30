@@ -26,7 +26,8 @@
       "enum": [
         "1.0.0",
         "1.1.0",
-        "1.2.0"
+        "1.2.0",
+        "1.3.0"
       ]
     },
     "preset": {
@@ -258,6 +259,10 @@
           "type": "string",
           "minLength": 1,
           "description": "Room the leaf sweeps into. Must equal this door's `from` or `to`."
+        },
+        "secondary": {
+          "type": "boolean",
+          "description": "1.3.0. false (or absent) = this door is an access-tree edge, part of the spanning set that makes every room reachable. true = an additional connection between two already-reachable adjacent rooms (SNiP 2.08.01-89 Posobie), never required for reachability: deleting every secondary door must leave the plan fully connected."
         }
       }
     },
@@ -302,7 +307,10 @@
       "if": {
         "properties": {
           "version": {
-            "const": "1.2.0"
+            "enum": [
+              "1.2.0",
+              "1.3.0"
+            ]
           }
         },
         "required": [
@@ -324,6 +332,35 @@
             "required": [
               "hinge",
               "swing_into"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": "1.3.0"
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
+      "then": {
+        "properties": {
+          "doors": {
+            "type": "array",
+            "items": {
+              "required": [
+                "secondary"
+              ]
+            }
+          },
+          "entry": {
+            "required": [
+              "secondary"
             ]
           }
         }

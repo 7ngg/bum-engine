@@ -13,7 +13,10 @@ Walls are rasterised on the 0.5 m grid: a wall unit-edge exists wherever two
 grid cells belong to different rooms (interior) or a room meets the outside
 (exterior). Collinear unit-edges merge into wall runs. Doors follow a spanning
 tree over the room-adjacency graph rooted at the Foyer, guaranteeing every room
-is reachable and every door sits on a real shared wall.
+is reachable and every door sits on a real shared wall; a small number of
+SECONDARY doors are then added ON TOP of that tree (see _secondary_doors) to
+break the pure-tree detours a spanning set forces. Which END of its wall each
+door sits at is R7 (see _position_doors).
 """
 
 from __future__ import annotations
@@ -569,40 +572,58 @@ def _interior_wall_between(recs: list[_WallRec], a: int, b: int) -> _WallRec | N
     return best
 
 
-def _door_pos(lo: float, hi: float, width: float, jamb: float) -> float:
+def _door_pos(lo: float, hi: float, width: float, jamb: float, anchor: str = "lo") -> float:
     """Position (scalar along the span, orientation-agnostic) for a door of
     `width` on a wall span [lo, hi]. A centered door splits the wall into two
     stub runs, neither long enough for furniture (architect review, Task 7);
-    instead push the door's near jamb `jamb` clear of the lo-end corner, so
-    the swing tucks against that corner's perpendicular return wall and the
-    hi side keeps one continuous usable run. `jamb` is derived from the host
+    instead push the door's near jamb `jamb` clear of ONE end corner, so the
+    swing tucks against that corner's perpendicular return wall and the other
+    side keeps one continuous usable run. `jamb` is derived from the host
     wall's own thickness_m (not a new constant) — a thicker wall's corner
     return plausibly wants more clearance, and every wall run's endpoints are
     real corners by construction (rasterised from cell-adjacency changes, see
-    module docstring), so "toward lo" always has a genuine perpendicular wall
+    module docstring), so either end always has a genuine perpendicular wall
     to tuck against.
 
-    Deterministic: always offsets toward lo (not a per-call choice), so the
-    same layout always places the same door the same way.
+    WHICH end is `anchor` ("lo" or "hi"), chosen by _position_doors (R7) — see
+    that function for the rule and its Neufert basis. It used to be hardwired
+    to "lo": deterministic, but an arbitrary pick between two ends Neufert
+    does not distinguish, and the architect's round-3 review flagged the
+    Mudroom->Garage door as sitting at the wrong one.
 
     Falls back to the midpoint when [lo, hi] is too short to fit jamb+width
-    without the door overflowing past hi — a short span has no usable run to
-    preserve either way, so there is nothing an offset would buy.
+    without the door overflowing the far end — a short span has no usable run
+    to preserve either way, so there is nothing an offset would buy (and both
+    anchors then coincide, keeping the fallback end-agnostic).
     """
     if hi - lo + geom.EPS < jamb + width:
         return (lo + hi) / 2.0
+    if anchor == "hi":
+        return hi - jamb - width / 2.0
     return lo + jamb + width / 2.0
 
 
-def _door_on(rec: _WallRec, rooms: list[FinalRoom], frm: str, to: str) -> Door:
+def _door_center(rec: _WallRec, width: float, anchor: str) -> list[float]:
+    e = rec.edge
+    pos = _door_pos(e.lo, e.hi, width, rec.wall.thickness_m, anchor)
+    return [e.fixed, pos] if e.orient == "V" else [pos, e.fixed]
+
+
+def _door_on(
+    rec: _WallRec,
+    rooms: list[FinalRoom],
+    frm: str,
+    to: str,
+    anchor: str = "lo",
+    secondary: bool = False,
+) -> Door:
     e = rec.edge
     width = min(DOOR_W, max(0.7, e.length - 0.2))
-    pos = _door_pos(e.lo, e.hi, width, rec.wall.thickness_m)
-    if e.orient == "V":
-        center = [e.fixed, pos]
-    else:
-        center = [pos, e.fixed]
-    return Door(**{"from": frm, "to": to, "wall_id": rec.wall.id, "center": center, "width_m": width, "height_m": DOOR_H})
+    return Door(**{
+        "from": frm, "to": to, "wall_id": rec.wall.id,
+        "center": _door_center(rec, width, anchor),
+        "width_m": width, "height_m": DOOR_H, "secondary": secondary,
+    })
 
 
 def _build_doors(
@@ -673,6 +694,363 @@ def _build_entry(rooms: list[FinalRoom], recs: list[_WallRec], warnings: list[st
     ext.sort(key=lambda r: r.edge.length, reverse=True)
     host_idx = ext[0].a if ext[0].a != -1 else ext[0].b
     return _door_on(ext[0], rooms, "OUTSIDE", rooms[host_idx].name)
+
+
+# ---------------------------------------------------------------------------
+# R7: which END of its host wall a door sits at
+# ---------------------------------------------------------------------------
+#
+# Neufert settles the HINGE side ("when located in corner of rm door should be
+# hinged at side nearer corner") but says nothing about WHICH corner a door
+# should be pushed toward when its wall has a usable corner at both ends. That
+# left _door_pos hardwired to the `lo` end: deterministic, but an arbitrary tie
+# broken by the rasterizer's scan order rather than by anything architectural —
+# and the architect's round-3 review flagged the resulting Mudroom->Garage
+# placement as sitting at the wrong end of its wall.
+#
+#   R7: a door sits at the end of its host wall NEARER THE OPENING BY WHICH ITS
+#       HOST ROOM IS ENTERED — the previous door on the access route.
+#
+# Doors are positioned in access-tree order outward from the front door, so
+# each leg of a route is the shortest hop from the one before and the walked
+# path through the house stops zig-zagging from wall end to wall end. This is
+# the same "circulation is the thing being designed" principle the corridor
+# spine already encodes, applied at door scale, and it needs no furniture: the
+# reference point is another door, which we have.
+#
+# The front door itself has no predecessor on the route and keeps the `lo`
+# anchor. So does any door whose parent room was never reached (a skipped
+# access edge), which keeps the fallback total.
+
+
+def _nearer_anchor(rec: _WallRec, width: float, ref: list[float]) -> str:
+    """Which anchor end puts the door closer to `ref`. Ties keep "lo", and the
+    comparison is strict, so the choice is a pure function of the geometry."""
+    best, best_d = "lo", None
+    for anchor in ("lo", "hi"):
+        d = math.dist(_door_center(rec, width, anchor), ref)
+        if best_d is None or d < best_d - geom.EPS:
+            best, best_d = anchor, d
+    return best
+
+
+def _swing_compromises(
+    rooms: list[FinalRoom],
+    recs: list[_WallRec],
+    doors: list[Door],
+    entry: Door,
+    terrace: Terrace | None,
+) -> list[str]:
+    """Run the real swing assignment on a throwaway warnings list and return
+    only the messages that mean it had to CONCEDE something: a hinge forced to
+    the far end (R5 lost), a facing overridden (R2/R3 lost), a leaf with nowhere
+    legal to go, a residual collision, or a leaf left obstructing a corridor.
+
+    Used as a cost function, so R7 and the secondary doors can be checked
+    against the same detector that gates the finished plan instead of a
+    separate approximation of it.
+    """
+    probe: list[str] = []
+    _assign_swings(rooms, recs, list(doors), entry, terrace, probe)
+    marks = ("hinge moved to the FAR end", "facing overridden to",
+             "UNRESOLVED swing collision", "no swing fits",
+             "swings into circulation")
+    return [w for w in probe if any(m in w for m in marks)]
+
+
+def _position_doors(
+    rooms: list[FinalRoom],
+    recs: list[_WallRec],
+    doors: list[Door],
+    entry: Door,
+    terrace: Terrace | None,
+) -> None:
+    """Apply R7 to every interior/terrace door, in place.
+
+    `doors` arrives in access-tree edge order (see _build_doors), which is a
+    valid topological order: a room's own incoming door is always appended
+    before any door leading out of it. So the forward pass needs no iteration
+    to a fixed point, and no two doors' positions can depend circularly on
+    each other.
+
+    R7 IS A PREFERENCE, NOT A NORM — the same standing as R5 (hinge at the
+    nearer end) and below R1/R4 (facing), and it loses the same way. Pulling
+    each door toward the previous one on the route also pulls doors TOWARD each
+    other, and in a small entrance hall that is enough to make two leaves
+    fight: on gE_eN the front door and Foyer->Corridor ended up 0.96 m apart,
+    and the swing resolver could only clear them by opening the corridor door
+    INTO the corridor — precisely what Neufert forbids and R1 exists to stop.
+    So the second pass costs the R7 choice against the real swing detector and
+    reverts, door by door, any placement that made it concede. Deterministic:
+    doors are revisited in list order and a revert is kept only on a strict
+    improvement.
+    """
+    rec_by_id = {r.wall.id: r for r in recs}
+    # The room each door is entered FROM has a known incoming opening; the
+    # entry door seeds the walk at the root.
+    incoming: dict[str, Door] = {}
+    if entry.to:
+        incoming[entry.to] = entry
+    moved: list[tuple[Door, _WallRec, list[float]]] = []
+    for d in doors:
+        rec = rec_by_id.get(d.wall_id)
+        ref = incoming.get(d.from_)
+        if rec is not None and ref is not None:
+            before = list(d.center)
+            d.center = _door_center(rec, d.width_m, _nearer_anchor(rec, d.width_m, ref.center))
+            if d.center != before:
+                moved.append((d, rec, before))
+        incoming.setdefault(d.to, d)
+
+    cost = len(_swing_compromises(rooms, recs, doors, entry, terrace))
+    for d, rec, before in moved:
+        if cost == 0:
+            break
+        after = d.center
+        d.center = before
+        trial = len(_swing_compromises(rooms, recs, doors, entry, terrace))
+        if trial < cost:
+            cost = trial  # keep the revert: R7 lost to the swing rules here
+        else:
+            d.center = after
+
+
+# ---------------------------------------------------------------------------
+# secondary doors: connections BEYOND the access-tree spanning set
+# ---------------------------------------------------------------------------
+#
+# _build_doors hosts exactly one door per access-tree edge. A spanning tree over
+# n rooms has n-1 edges and no cycles, so every trip between two rooms is forced
+# up and back down the tree — which is why carrying a plate from the Kitchen to
+# the Dining room walks Kitchen -> Foyer -> Corridor -> Living -> Dining even
+# though the Kitchen and the Living room share a 2.5 m wall. Real dwellings have
+# rings, not pure trees.
+#
+# NORM BASIS — SNiP 2.08.01-89 Posobie, apartment-planning section:
+#   "Возможно создание дополнительных связей между смежными помещениями,
+#    улучшающих функциональную и пространственную организацию квартир"
+#   (additional connections between adjacent rooms may be created, improving
+#   the functional and spatial organisation of apartments).
+# The same section treats the separation this fixes as a DEFECT needing a
+# remedy: where the main dining zone sits outside the kitchen and has no direct
+# connection to it, the kitchen must carry a supplementary 2-3 seat dining area.
+# A direct connection is the better answer, and the norm permits it explicitly.
+#
+# Secondary doors are strictly ADDITIVE. validator.access_tree is recomputed
+# from room adjacency, never from the door list, so adding one cannot change the
+# tree, the reachability gate, or the kitchen-direct invariant. Delete every
+# door with secondary=True and the plan is exactly as connected as before — that
+# is the invariant, and tests/test_slicer.py asserts it directly.
+
+SECONDARY_MIN_HOPS = 3       # see _secondary_doors for why 3 and not 2
+MAX_SECONDARY_DOORS = 2      # a house with rings, not an open plan by accident
+SECONDARY_MIN_FREE_WALL_M = 1.5  # usable furniture run both rooms must keep
+
+
+def _opening_spans(
+    doors: list[Door], windows: list[Window], recs: list[_WallRec]
+) -> dict[str, list[tuple[float, float]]]:
+    """wall_id -> the [lo, hi] spans its openings consume, along the wall."""
+    orient = {r.wall.id: r.edge.orient for r in recs}
+    spans: dict[str, list[tuple[float, float]]] = {}
+    for o in list(doors) + list(windows):
+        ori = orient.get(o.wall_id)
+        if ori is None:
+            continue
+        t = o.center[1] if ori == "V" else o.center[0]
+        spans.setdefault(o.wall_id, []).append((t - o.width_m / 2, t + o.width_m / 2))
+    return spans
+
+
+def _longest_free_wall_run(
+    idx: int, recs: list[_WallRec], spans: dict[str, list[tuple[float, float]]]
+) -> float:
+    """Longest uninterrupted opening-free wall segment bounding room `idx`.
+
+    Neufert's room layouts all assume a continuous run to place furniture
+    against (bed head, sofa back, worktop). A room whose every wall is chopped
+    into stubs by openings is unfurnishable, so this is what a new door has to
+    leave behind — measured per wall RUN, since a segment cannot continue
+    around a corner.
+    """
+    best = 0.0
+    for r in recs:
+        if idx not in (r.a, r.b):
+            continue
+        pos = r.edge.lo
+        for c0, c1 in sorted(spans.get(r.wall.id, [])):
+            best = max(best, min(c0, r.edge.hi) - pos)
+            pos = max(pos, c1)
+        best = max(best, r.edge.hi - pos)
+    return best
+
+
+def _secondary_refused(rooms: list[FinalRoom], i: int, j: int) -> str | None:
+    """None if a door between these two rooms breaks no access rule, else why.
+
+    A tree edge is DIRECTED (parent -> child) and access_tree applies its tier
+    rules to the child only. A secondary door is undirected — it can be walked
+    either way — so every rule is applied in BOTH directions here. That is
+    strictly stronger than the tree's own test, which is the point: the tree
+    gets to assume a direction, an added ring does not.
+    """
+    from .validator import _is_public  # lazy: same reason as _build_doors
+
+    for a, b in ((i, j), (j, i)):
+        na, nb = rooms[a].name, rooms[b].name
+        ca, cb = rooms[a].category, rooms[b].category
+        spec = standards.ROOMS.get(nb)
+        # TIER 2 (ensuite): an ensuite opens off its designated parent, full stop.
+        if spec and spec.allowed_ensuite_parents and na not in spec.allowed_ensuite_parents:
+            return (f"{nb} is an ensuite of {'/'.join(spec.allowed_ensuite_parents)}; "
+                    f"a second door from {na} would open it onto the wrong room")
+        # TIER 1 (privacy): a no_through PRIVATE room only ever opens off
+        # circulation. NOTE the `private` half: access_tree's tier 1 reads
+        # `no_through(nb) and cats[nb] == "private"`, and its docstring is
+        # explicit that a no_through WET room (the Kitchen) is NOT bound by it —
+        # "it opens off the dining/living in an open plan". Verified against
+        # validator.py before relying on it; that exemption is exactly what
+        # makes Kitchen<->Living a legal ring.
+        if spec and spec.no_through_traffic and cb == "private" and ca != "circ":
+            return f"{nb} is a no-through private room; it may only open off circulation, not {na}"
+        # MIRROR (public): a social room is entered from circulation or another
+        # social room, never through a private/service one.
+        if _is_public(nb, cb) and ca != "circ" and not _is_public(na, ca):
+            return (f"{nb} is a social room; it may only open off circulation or another "
+                    f"social room, not {na}")
+    return None
+
+
+def _secondary_doors(
+    rooms: list[FinalRoom],
+    recs: list[_WallRec],
+    doors: list[Door],
+    entry: Door,
+    terrace: Terrace | None,
+    windows: list[Window],
+) -> tuple[list[Door], list[dict]]:
+    """Pick up to MAX_SECONDARY_DOORS additional connections. Returns
+    (doors, report); the report records EVERY candidate and its verdict, for
+    tests and review, and is deliberately not pushed into layout.warnings —
+    a norm-sanctioned improvement is not a defect to warn about.
+
+    Eligibility, all of which must hold:
+      E1 the two rooms share an interior wall >= ACCESS_DOOR_M;
+      E2 they are >= SECONDARY_MIN_HOPS apart in the CURRENT door graph;
+      E3 the connection serves a habitable room;
+      E4 no access rule is broken in either direction (_secondary_refused);
+      E5 both rooms keep a >= SECONDARY_MIN_FREE_WALL_M furniture run;
+      E6 the new leaf's swing collides with nothing (the existing all-pairs
+         detector in _assign_swings, run on the full door set).
+
+    E2's threshold is 3, read off the measured graph rather than assumed: on the
+    184 fixture Kitchen->Living is 3 hops and Kitchen->Dining is 4. At 2 the rule
+    would also fire on pairs that are already one room apart (Corridor<->Kitchen,
+    Bedroom 2<->Bathroom), where a second door buys a step and costs a wall. 3 is
+    the first threshold that admits the defect the architect reported and nothing
+    that is merely convenient.
+    """
+    from collections import deque
+    from .validator import ACCESS_DOOR_M
+
+    n = len(rooms)
+    idx_of = {rm.name: i for i, rm in enumerate(rooms)}
+    graph: dict[int, set[int]] = {i: set() for i in range(n)}
+    for d in doors:
+        a, b = idx_of.get(d.from_), idx_of.get(d.to)
+        if a is not None and b is not None:
+            graph[a].add(b)
+            graph[b].add(a)
+
+    def hops(src: int) -> dict[int, int]:
+        seen = {src: 0}
+        q = deque([src])
+        while q:
+            cur = q.popleft()
+            for nb in sorted(graph[cur]):
+                if nb not in seen:
+                    seen[nb] = seen[cur] + 1
+                    q.append(nb)
+        return seen
+
+    def habitable(k: int) -> bool:
+        # The norm's stated benefit is to the dwelling's FUNCTIONAL organisation,
+        # so at least one end must be a habitable/social room. This is what keeps
+        # service-to-service shortcuts (Laundry<->Garage, Laundry<->Mudroom) out:
+        # they pass every access rule, but no cited norm asks for them and each
+        # one still costs an opening.
+        return rooms[k].category in ("living", "office") or rooms[k].name == "Kitchen"
+
+    report: list[dict] = []
+    ranked: list[tuple] = []
+    for i in range(n):
+        di = hops(i)
+        for j in range(i + 1, n):
+            rec = _interior_wall_between(recs, i, j)
+            if rec is None or rec.edge.length < ACCESS_DOOR_M - geom.EPS:
+                continue  # E1: not a real shared wall a door fits in
+            if j in graph[i]:
+                continue  # already a tree door here
+            h = di.get(j, -1)
+            row = {"a": rooms[i].name, "b": rooms[j].name, "wall_id": rec.wall.id,
+                   "wall_len": round(rec.edge.length, 2), "hops": h,
+                   "benefit": (h - 1) if h > 0 else 0, "accepted": False, "reason": ""}
+            if h < SECONDARY_MIN_HOPS:
+                row["reason"] = f"E2 only {h} hops apart (needs >= {SECONDARY_MIN_HOPS})"
+            elif not (habitable(i) or habitable(j)):
+                row["reason"] = "E3 neither room is habitable/social; no norm asks for this link"
+            else:
+                refused = _secondary_refused(rooms, i, j)
+                row["reason"] = f"E4 {refused}" if refused else ""
+            report.append(row)
+            if not row["reason"]:
+                ranked.append((-row["benefit"], -rec.edge.length, rooms[i].name, rooms[j].name, i, j, rec, row))
+
+    ranked.sort(key=lambda t: t[:4])
+    accepted: list[Door] = []
+    for _b, _l, _na, _nb, i, j, rec, row in ranked:
+        if len(accepted) >= MAX_SECONDARY_DOORS:
+            row["reason"] = f"capped at {MAX_SECONDARY_DOORS} secondary doors"
+            continue
+        width = min(DOOR_W, max(0.7, rec.edge.length - 0.2))
+        # R7 for a door with no tree parent: it exists to shorten the walk
+        # between these two rooms, so it goes where that walk is shortest —
+        # nearest existing opening of one room plus nearest of the other.
+        best, best_cost = "lo", None
+        for anchor in ("lo", "hi"):
+            c = _door_center(rec, width, anchor)
+            cost = 0.0
+            for k in (i, j):
+                near = [math.dist(c, d.center) for d in list(doors) + accepted + [entry]
+                        if rooms[k].name in (d.from_, d.to)]
+                cost += min(near) if near else 0.0
+            if best_cost is None or cost < best_cost - geom.EPS:
+                best, best_cost = anchor, cost
+        cand = _door_on(rec, rooms, rooms[i].name, rooms[j].name, anchor=best, secondary=True)
+
+        # E5: both rooms keep a usable furniture run WITH the new door in place
+        spans = _opening_spans(list(doors) + accepted + [cand], windows, recs)
+        runs = {k: _longest_free_wall_run(k, recs, spans) for k in (i, j)}
+        short = [k for k in (i, j) if runs[k] < SECONDARY_MIN_FREE_WALL_M - geom.EPS]
+        if short:
+            row["reason"] = ("E5 " + ", ".join(
+                f"{rooms[k].name} would keep only {runs[k]:.2f} m of free wall" for k in short))
+            continue
+        row["free_runs"] = {rooms[k].name: round(runs[k], 2) for k in (i, j)}
+
+        # E6: reuse the real all-pairs swing detector on the complete door set.
+        # Any concession counts, not just an unresolved overlap: a door that
+        # only fits by flipping someone else's leaf into the corridor has not
+        # "collided with nothing", it has spent a norm to buy a shortcut.
+        clash = _swing_compromises(rooms, recs, list(doors) + accepted + [cand], entry, terrace)
+        if clash:
+            row["reason"] = f"E6 swing: {clash[0]}"
+            continue
+        row["accepted"] = True
+        row["anchor"] = best
+        row["center"] = [round(v, 3) for v in cand.center]
+        accepted.append(cand)
+    return accepted, report
 
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1582,13 @@ def build_layout(result: SolveResult, program: Program, wall_height_m: float = 2
     windows = _build_windows(rooms, recs)
     terrace, terrace_doors = _build_terrace(rooms, recs)
     doors.extend(terrace_doors)
+    # R7 before anything reads a door CENTRE: _secondary_doors measures travel
+    # between existing openings, and _assign_swings derives every hinge point
+    # and wedge from the centre, so both would otherwise be computed against
+    # positions that are about to move.
+    _position_doors(rooms, recs, doors, entry, terrace)
+    secondary, _report = _secondary_doors(rooms, recs, doors, entry, terrace, windows)
+    doors.extend(secondary)
     # hinge/facing last: it needs the terrace rect and the complete door set,
     # since a collision is only detectable across all doors sharing a room.
     _assign_swings(rooms, recs, doors, entry, terrace, warnings)

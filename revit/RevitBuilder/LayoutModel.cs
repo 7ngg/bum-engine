@@ -98,6 +98,16 @@ namespace BumEngine.Revit
         /// own From or To.</summary>
         [JsonPropertyName("swing_into")] public string? SwingInto { get; set; }
 
+        // Schema 1.3.0. False (or absent, on 1.0.0-1.2.0 layouts) means this
+        // door is an access-tree edge: part of the spanning set that makes
+        // every room reachable. True means a SECONDARY door -- an additional
+        // connection between two already-reachable adjacent rooms, permitted by
+        // SNiP 2.08.01-89 Posobie and never required for reachability. It hosts
+        // exactly like any other door; the flag is here so a consumer can tell
+        // the two apart (e.g. to tag or schedule them separately) without
+        // re-deriving the access graph the geometry service already computed.
+        [JsonPropertyName("secondary")] public bool Secondary { get; set; }
+
         /// <summary>True when this door carries schema-1.2.0 swing data.</summary>
         public bool HasSwing =>
             !string.IsNullOrEmpty(Hinge) && !string.IsNullOrEmpty(SwingInto);

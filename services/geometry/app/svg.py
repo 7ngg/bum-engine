@@ -95,19 +95,24 @@ def render(layout: Layout) -> str:
 
     for d in list(layout.doors) + [layout.entry]:
         cx, cy = d.center
+        # A SECONDARY door (schema 1.3.0) is an additional connection, not part
+        # of the access-tree spanning set — drawn in a distinct colour so a
+        # reviewer can see at a glance which doors the plan depends on for
+        # reachability and which are the norm-sanctioned extras.
+        ink = "#b8860b" if d.secondary else "#2e7d32"
         wall = walls_by_id.get(d.wall_id)
         rect = rect_by_name.get(d.swing_into)
         if wall is None or rect is None:
             # nothing to swing into (or no host): fall back to the old dot
             parts.append(
-                f'<circle cx="{fx(cx):.1f}" cy="{fy(cy):.1f}" r="3.5" fill="#2e7d32"/>')
+                f'<circle cx="{fx(cx):.1f}" cy="{fy(cy):.1f}" r="3.5" fill="{ink}"/>')
             continue
 
         hinge_pt, along = _hinge_frame(d, wall, d.hinge)
         into = _into_normal(d, wall, rect)
         if into is None:
             parts.append(
-                f'<circle cx="{fx(cx):.1f}" cy="{fy(cy):.1f}" r="3.5" fill="#2e7d32"/>')
+                f'<circle cx="{fx(cx):.1f}" cy="{fy(cy):.1f}" r="3.5" fill="{ink}"/>')
             continue
 
         r = d.width_m
@@ -124,13 +129,13 @@ def render(layout: Layout) -> str:
 
         parts.append(  # the arc the leaf sweeps
             f'<path d="M {sx:.1f} {sy:.1f} A {rpx:.1f} {rpx:.1f} 0 0 {sweep} '
-            f'{ox:.1f} {oy:.1f}" fill="none" stroke="#2e7d32" '
+            f'{ox:.1f} {oy:.1f}" fill="none" stroke="{ink}" '
             f'stroke-width="1" stroke-dasharray="3,2"/>')
         parts.append(  # the leaf itself, standing open at 90 degrees
             f'<line x1="{hx:.1f}" y1="{hy:.1f}" x2="{ox:.1f}" y2="{oy:.1f}" '
-            f'stroke="#2e7d32" stroke-width="2.5" stroke-linecap="round"/>')
+            f'stroke="{ink}" stroke-width="2.5" stroke-linecap="round"/>')
         parts.append(  # hinge
-            f'<circle cx="{hx:.1f}" cy="{hy:.1f}" r="2" fill="#2e7d32"/>')
+            f'<circle cx="{hx:.1f}" cy="{hy:.1f}" r="2" fill="{ink}"/>')
     for wd in layout.windows:
         cx, cy = wd.center
         parts.append(

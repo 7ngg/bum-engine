@@ -13,8 +13,9 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 # The layout.json wire version — shared with schemas/layout.schema.json and
-# revit/RevitBuilder/LayoutModel.cs, both unchanged this task, so it stays 1.1.0.
-SCHEMA_VERSION = "1.2.0"
+# revit/RevitBuilder/LayoutModel.cs. 1.3.0 adds Door.secondary (below); all
+# three move together.
+SCHEMA_VERSION = "1.3.0"
 # program.json forked to 1.2.0 for the target_area_m2 -> footprint_target_m2
 # rename, then to 1.3.0 for the optional `site` block (setbacks + coverage cap).
 # Both are additive: 1.0.0/1.1.0/1.2.0 documents still load (site defaults). The
@@ -185,6 +186,14 @@ class Door(BaseModel):
     hinge: Literal["start", "end"] = "start"
     # Room the leaf sweeps into. Always one of this door's own from/to.
     swing_into: str = ""
+    # 1.3.0. False = this door IS an access-tree edge (the spanning set that
+    # makes every room reachable). True = a SECONDARY door: an additional
+    # connection between two already-reachable adjacent rooms, permitted by
+    # SNiP 2.08.01-89 Posobie's apartment-planning clause and never required
+    # for reachability. Deleting every secondary door must leave a fully
+    # connected plan — that is the invariant, and it is what lets the Revit
+    # builder, the SVG and the tests tell the two kinds apart.
+    secondary: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -203,7 +212,7 @@ class Terrace(BaseModel):
 
 
 class Layout(BaseModel):
-    version: Literal["1.0.0", "1.1.0", "1.2.0"] = SCHEMA_VERSION
+    version: Literal["1.0.0", "1.1.0", "1.2.0", "1.3.0"] = SCHEMA_VERSION
     preset: str
     seed: int
     objective: float

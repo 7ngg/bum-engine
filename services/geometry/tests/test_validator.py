@@ -142,10 +142,18 @@ def test_access_tree_routing_invariant(program, preset):
 
 @pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
 def test_doors_are_exactly_the_access_tree_edges(program, preset):
-    # Source-of-truth guarantee: the interior doors are EXACTLY validator's
+    # Source-of-truth guarantee: the interior TREE doors are EXACTLY validator's
     # access_tree edges — the door builder consumes that one tree, it does not
     # recompute its own. So a door can never exist that the access graph (which
     # validate_plan gates on) did not produce, and the two can never disagree.
+    #
+    # Schema 1.3.0 adds SECONDARY doors (slicer._secondary_doors): additional
+    # connections between two already-reachable adjacent rooms, permitted by
+    # SNiP 2.08.01-89 Posobie, which by design are NOT tree edges. They are
+    # excluded from the equality and then checked separately, so this test now
+    # asserts something strictly stronger than it did before the split: the
+    # tree doors still match the tree exactly, AND no door may sit outside the
+    # tree without being flagged.
     from app.validator import access_tree
 
     r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
@@ -153,12 +161,19 @@ def test_doors_are_exactly_the_access_tree_edges(program, preset):
     layout = build_layout(r, program)
     edges, _reached, _root = access_tree(layout.rooms)
     tree = {frozenset((layout.rooms[i].name, layout.rooms[j].name)) for i, j in edges}
-    interior = {
-        frozenset((d.from_, d.to))
-        for d in layout.doors
-        if d.from_ != "OUTSIDE" and "Terrace" not in (d.from_, d.to)
-    }
+
+    def pairs(secondary: bool) -> set:
+        return {
+            frozenset((d.from_, d.to))
+            for d in layout.doors
+            if d.from_ != "OUTSIDE" and "Terrace" not in (d.from_, d.to)
+            and d.secondary is secondary
+        }
+
+    interior = pairs(secondary=False)
     assert interior == tree, f"doors diverge from access tree: {interior ^ tree}"
+    # nothing unflagged may live outside the tree, and nothing flagged inside it
+    assert not (pairs(secondary=True) & tree), "a secondary door duplicates a tree edge"
 
 
 @pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
