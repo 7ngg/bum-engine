@@ -19,11 +19,86 @@ Pure data: no imports from any other app module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Below 1200mm two people cannot pass; 1200mm is also the wheelchair
 # door-opening minimum (Neufert). Confirmed, not a guess.
 DOOR_CLEAR_WIDTH_M = 0.9  # 900mm doorset: the wheelchair-access doorset minimum
+
+
+# ---------------------------------------------------------------------------
+# THE ARCHITECT'S ROOM AREA TABLE (min, max m2).
+#
+# SOURCE: the project architect, review round 3 (2026-08-01), supplied alongside
+# his size diagnosis -- "you don't separate the rooms correctly, that's why we
+# get the out-of-size issue" -- and a site-coverage target of ~40% (192 m2 on
+# this 480 m2 plot). It is his table, not Neufert's and not the Posobie's: the
+# entries below are a practitioner's buildable ranges for this house type, and
+# where they disagree with a norm minimum the norm still wins (the norm is a
+# floor; this table is a working envelope on top of it).
+#
+# This is the FIRST maximum area anywhere in the codebase. Until Phase 1 the
+# only ceiling was solver.AREA_HI, a multiple of a per-zone TARGET rather than
+# anything about the room type -- which is why a 21.25 m2 corridor and a 15.0 m2
+# master bedroom could coexist in one plan and nothing could see it.
+#
+# Entries the slicer does not currently emit (Pantry, Technical Room, Terrace,
+# Balcony) are recorded for completeness and deliberately NOT added to ROOMS --
+# test_standards_cover_every_room_name_slicer_can_emit asserts ROOMS is exactly
+# the emittable set, and that invariant is worth more than the placeholder.
+ARCHITECT_AREA_BANDS: dict[str, tuple[float, float]] = {
+    "Foyer": (4, 10),
+    "Mudroom": (3, 8),
+    "Living": (20, 45),
+    "Dining": (12, 25),
+    "Kitchen": (10, 22),
+    "Pantry": (2, 6),                 # not emitted by the slicer
+    "Master Bedroom": (16, 30),
+    "Master Bathroom": (5, 12),
+    "Walk-in Closet": (4, 12),
+    "Bedroom 2": (12, 20),
+    "Bedroom 3": (12, 20),
+    # BATHROOM: HIS NUMBER, VERBATIM -- and it is currently INFEASIBLE. Read this
+    # before touching it; the temptation to "just raise it" is the whole point.
+    #
+    # _slice_children puts the Bathroom in the middle band, spanning the children
+    # zone's full WIDTH, and its minimum depth ceil-snaps to 2.5 m on
+    # GRID_M = 0.5. So the zone width is capped at 9 / 2.5 = 3.6 -> 3.5 m on the
+    # grid, and the next realisable bathroom is 4.0 x 2.5 = 10.0 m2 exactly.
+    # There is nothing between 8.75 and 10.0 to choose.
+    #
+    # Measured consequence: with every other band as he wrote it, exact tiling
+    # (COVERAGE_MIN = 1.00) is INFEASIBLE at EVERY footprint target from 184 to
+    # 220 on both presets -- the children zone is confined to a 2.5-3.5 m wide
+    # strip and the zones can no longer tile a rectangle. Raising ONLY this
+    # ceiling to 10.0 restores OPTIMAL at 208.0 m2. Raising it to 9.5 does NOT
+    # help, which is the proof that this is quantisation and not slack.
+    #
+    # A 10.0 override was written here and then REVERTED: only the Garage
+    # override was authorised, and changing his numbers is his ruling to make,
+    # not ours. This is a QUESTION FOR HIM, alongside the Garage two-car row --
+    # "your 9 m2 hall-bathroom ceiling is unreachable on our 0.5 m planning grid;
+    # is 10 acceptable, or should the grid change?" Until he answers, his number
+    # stands and the plan does not solve.
+    "Bathroom": (4, 9),
+    "Guest WC": (1.5, 3.5),
+    "Office": (10, 20),
+    "Laundry": (4, 10),
+    "Corridor": (6, 25),
+    # GARAGE OVERRIDE -- his table says 18, this table says 29.2.
+    # His 18 m2 floor is a SINGLE bay. The brief specifies a double garage and
+    # the Garage entry below already encodes the two-car figure (the example
+    # program's own 5.4 x 5.4 = 29.16 -> 29.2 m2). Adopting 18 verbatim would
+    # have silently downgraded the house to one car -- measured in the Phase 0
+    # audit, where the garage fell 31.50 -> 24.50 m2 at target 192 and to 18.00
+    # at the packing floor. His table has NO two-car row, so this override is
+    # PENDING HIS CONFIRMATION; if he says 18 is deliberate, drop the override
+    # and the two-car guarantee with it.
+    "Garage": (29.2, 40),
+    "Technical Room": (3, 8),         # not emitted by the slicer
+    "Terrace": (10, 40),              # a projection, not a room in `rooms[]`
+    "Balcony": (3, 12),               # not emitted by the slicer
+}
 
 
 @dataclass(frozen=True)
@@ -34,6 +109,13 @@ class RoomStandard:
     max_aspect: float
     requires_exterior_wall: bool
     requires_circulation_access: bool
+    # Upper area bound, from ARCHITECT_AREA_BANDS. `inf` means "no ceiling
+    # stated" -- never 0, so an unpopulated room can only ever be unbounded, not
+    # accidentally impossible. min_area_m2 above stays the NORM floor; the
+    # architect's own minimum is applied separately (see architect_band) so the
+    # two sources never get conflated -- that conflation is exactly what
+    # [[clear_vs_nominal_dims]] cost us once already.
+    max_area_m2: float = float("inf")
     # Neufert p47/p55: no door path may transit this room (worktop-cooker-sink
     # sequence for Kitchen; through-bedroom isn't a legal circulation mode at
     # all). Data only in this task — Task 3's spanning tree consumes it.
@@ -235,6 +317,47 @@ ROOMS: dict[str, RoomStandard] = {
         requires_exterior_wall=False, requires_circulation_access=False,
     ),
 }
+
+# Slicer fallback names that share a band with a table entry. "Bedroom" and
+# "Children Bedroom" are what _slice_children emits when it CANNOT split the
+# zone into two beds + bathroom; they are the same room type as "Bedroom 2" and
+# take the same envelope.
+_BAND_ALIAS = {"Bedroom": "Bedroom 2", "Children Bedroom": "Bedroom 2"}
+
+# Fold the architect's ceilings into ROOMS in ONE place rather than hand-copying
+# a number into 18 entries, so the table above stays the single source and the
+# two cannot drift.
+ROOMS = {
+    name: (
+        replace(spec, max_area_m2=ARCHITECT_AREA_BANDS[_BAND_ALIAS.get(name, name)][1])
+        if _BAND_ALIAS.get(name, name) in ARCHITECT_AREA_BANDS
+        else spec
+    )
+    for name, spec in ROOMS.items()
+}
+
+
+def architect_band(room: str) -> tuple[float, float] | None:
+    """The architect's (min, max) area band for a room name, or None if he gave
+    no figure for it. The MIN here is his, deliberately separate from
+    RoomStandard.min_area_m2 (the Neufert/SNiP norm floor): the two answer
+    different questions and a room must clear BOTH."""
+    key = _BAND_ALIAS.get(room, room)
+    return ARCHITECT_AREA_BANDS.get(key)
+
+
+def area_floor(room: str) -> float:
+    """The binding minimum area for a room: the higher of the norm floor and the
+    architect's minimum. This is the number the slicer must actually hit."""
+    spec = ROOMS.get(room)
+    norm = spec.min_area_m2 if spec is not None else 0.0
+    band = architect_band(room)
+    return max(norm, band[0]) if band is not None else norm
+
+
+def area_ceiling(room: str) -> float:
+    spec = ROOMS.get(room)
+    return spec.max_area_m2 if spec is not None else float("inf")
 
 
 # ---------------------------------------------------------------------------

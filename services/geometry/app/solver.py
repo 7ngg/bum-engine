@@ -23,11 +23,31 @@ from . import standards
 from . import zones as Z
 
 GRID_M = 0.5  # one grid cell edge, metres
-AREA_LO = 0.85  # min zone area as fraction of its target
-# Max zone area as a fraction of its target. Raised 1.20 -> 1.50 to admit exact
-# tiling: at 1.20 the zones cannot be grown enough to fill the footprint without
-# leaving dead pockets, and COVERAGE_MIN == 1.0 below is then INFEASIBLE. This
-# ceiling is what actually blocked a clean envelope, not rectangle packing.
+# PHASE 1: zone areas are bounded by the ARCHITECT'S ROOM TABLE, summed over each
+# zone's member rooms (slicer.zone_band -> standards.ARCHITECT_AREA_BANDS), and
+# NOT by a proportional window around a reconciled target.
+#
+# What the old AREA_LO/AREA_HI = 0.85/1.50 window actually did, measured in the
+# Phase 0 audit: with COVERAGE_MIN == 1.0 (exact tiling) the zones must fill
+# whatever rectangle they occupy, so a 1.50 ceiling was not generosity but the
+# pressure valve that tiling required — and it pinned the footprint at exactly
+# 210.0 m2 for EVERY target from 184 to 210 (both bounds proven: <=209
+# infeasible). The target was not a lever at all. With room-derived bands the
+# proven floor is 175.0 m2 (<=174.5 infeasible).
+#
+# What the bands actually produce has NOT been swept yet, so no number is
+# claimed here. The only measurement taken since the band adoption is a pair of
+# targeted solves (2026-08-01, roomy fixture, target 192, seed 1, workers=1,
+# time_limit_s=120, avoid HELD, presets gW_eN and gE_eN, with the Bathroom
+# ceiling temporarily at 10 because his 9 is unreachable on the grid): footprint
+# 208.0 m2, void 0.0, objective 476.90625 on both. Two cells at one target is not
+# a sweep — do not read a footprint floor off it. An earlier draft of this
+# comment asserted "195.0 with zero void" from an intermediate run; it was wrong.
+#
+# AREA_LO/AREA_HI remain ONLY as the fallback for a zone whose members carry no
+# architect band, so an unlisted zone still gets a sane window instead of being
+# silently unbounded.
+AREA_LO = 0.85
 AREA_HI = 1.50
 FOOTPRINT_LO = 0.95  # min house footprint as fraction of program.target_area_m2
 FOOTPRINT_HI = 1.15  # max house footprint as fraction of program.target_area_m2
@@ -89,7 +109,10 @@ class SolveResult:
     # Cut axis the SOLVER chose for a composite zone, as the director's side
     # ("N"/"S"/"E"/"W"). The slicer reads this instead of re-deriving it, so the
     # zone's (w,h) — constrained to a shape legal for THIS axis — always matches
-    # the cut. Currently only kitchen_laundry (see legal_pairs / _AXIAL).
+    # the cut. Populated for kitchen_laundry (director: dining, via _tie_cut_axis)
+    # and, since Phase 1, entry (director: garage, via _tie_axis_to_position —
+    # garage<->entry is only a DESIRABLE, so there is no required wall to hang the
+    # axis off and it is bound by centroid instead). See legal_pairs / _AXIAL.
     cut_sides: dict[str, str] = field(default_factory=dict)
     # Side ("N"/"S"/"E"/"W") the corridor attached to a zone, read off the
     # solver's own disjunction bools (_force_master_corridor_overlap for
@@ -280,6 +303,53 @@ def _tie_cut_axis(
 
     m.AddBoolOr([bE, bW, bN, bS])          # the adjacency itself (hard-required)
     m.AddMaxEquality(ns, [bN, bS])         # ns == (director is N or S)
+    return {"E": bE, "W": bW, "N": bN, "S": bS}
+
+
+def _tie_axis_to_position(
+    m: cp_model.CpModel, a: _ZoneVars, b: _ZoneVars, ns: cp_model.IntVar, tag: str
+) -> dict[str, cp_model.IntVar]:
+    """Bind `ns` to which side of `a` the director `b` sits on, by CENTROID —
+    the adjacency-free sibling of _tie_cut_axis.
+
+    _tie_cut_axis requires a and b to share a wall, because it is applied to
+    REQUIRED_ADJ pairs. entry<->garage is only a DESIRABLE, so the two need not
+    touch at all, and entry still has to know which way to face its Mudroom.
+    This reproduces slicer._side_of's centroid rule EXACTLY, including its
+    tie-break (a tie on |dx| vs |dy| goes to the E/W axis):
+
+        ns = 1  iff  |dy| > |dx|      where d = centroid(b) - centroid(a)
+
+    Centroids are doubled to stay integral on the grid. The slicer then reads
+    the recorded side instead of re-deriving it, so the solver's shape table and
+    the actual cut can never disagree — the same discipline that made
+    kitchen_laundry's axis trustworthy."""
+    sx = m.NewIntVar(-20_000, 20_000, f"{tag}_sx")
+    sy = m.NewIntVar(-20_000, 20_000, f"{tag}_sy")
+    m.Add(sx == (b.x0 + b.x1) - (a.x0 + a.x1))
+    m.Add(sy == (b.y0 + b.y1) - (a.y0 + a.y1))
+    adx = m.NewIntVar(0, 20_000, f"{tag}_adx")
+    ady = m.NewIntVar(0, 20_000, f"{tag}_ady")
+    m.AddAbsEquality(adx, sx)
+    m.AddAbsEquality(ady, sy)
+    # ns == (ady > adx)
+    m.Add(ady >= adx + 1).OnlyEnforceIf(ns)
+    m.Add(ady <= adx).OnlyEnforceIf(ns.Not())
+
+    bE = m.NewBoolVar(f"{tag}_bE")
+    bW = m.NewBoolVar(f"{tag}_bW")
+    bN = m.NewBoolVar(f"{tag}_bN")
+    bS = m.NewBoolVar(f"{tag}_bS")
+    m.AddBoolOr([bE, bW, bN, bS])
+    m.AddAtMostOne([bE, bW, bN, bS])
+    for bv in (bE, bW):
+        m.Add(ns == 0).OnlyEnforceIf(bv)
+    for bv in (bN, bS):
+        m.Add(ns == 1).OnlyEnforceIf(bv)
+    m.Add(sx >= 0).OnlyEnforceIf(bE)
+    m.Add(sx <= 0).OnlyEnforceIf(bW)
+    m.Add(sy >= 0).OnlyEnforceIf(bN)
+    m.Add(sy <= 0).OnlyEnforceIf(bS)
     return {"E": bE, "W": bW, "N": bN, "S": bS}
 
 
@@ -496,6 +566,116 @@ def _force_corridor_overlaps_kitchen(
         m.Add(x_hi - kit_lo_E >= overlap).OnlyEnforceIf([cside, dE])
 
 
+def _force_backbone_reaches_foyer(
+    m: cp_model.CpModel,
+    entry: _ZoneVars,
+    targets: list[tuple[ZoneId, _ZoneVars]],
+    gside: dict[str, cp_model.IntVar],
+    mud_x: int,
+    mud_y: int,
+    door_u: int,
+    tag: str,
+) -> None:
+    """Room-level backbone hardening for the entry zone (F) — the sixth instance
+    of this project's recurring defect class: a ZONE-level guarantee whose
+    room-level winner is unconstrained.
+
+    `_attach("entry", [circulation, "living"], ...)` only ever promised that the
+    entry ZONE shares >= ACCESS_DOOR_M with one of its backbone neighbours. Which
+    of the three sub-rooms receives that segment was nobody's decision. The entry
+    zone slices into Mudroom | Foyer | Guest WC (see _slice_entry), the Foyer is
+    the access-tree ROOT, and the Guest WC is no_through_traffic — so a contact
+    landing entirely on the WC connects the house to a room nothing may pass
+    through, and every room downstream of the root is orphaned. Measured at
+    target 192 before the fix: gW_eN reached 3 of 16 rooms.
+
+    WHY THE MUDROOM AND NOT THE FOYER. The literal statement of the requirement
+    is "the Foyer holds the contact", but the Foyer's band position depends on
+    the Guest WC's strip depth, and Phase 1 made that depth a SEARCHED quantity
+    (_grid_steps in _split_off_wc: 1.5 m or 2.0 m depending on which lands both
+    sub-rooms in band). A band whose offset is not a constant cannot be reified
+    the way _force_corridor_overlaps_kitchen reifies the Kitchen band off a
+    constant Laundry strip. The MUDROOM's depth IS constant — it is
+    _ceil_snap(min dim) with no search, exactly `mud_x` / `mud_y` here — and
+    _split_off_wc now guarantees FOYER-ADJACENT-TO-MUDROOM in all eight
+    (garage side x cut axis) cases, over at least the Foyer's own 1.5 m minimum.
+    So forcing the contact onto the Mudroom band gives Corridor -> Mudroom ->
+    Foyer at room level, which is the same guarantee by a constant-offset route.
+
+    The Mudroom is the strip at the garage end, spanning the zone's FULL extent
+    on the perpendicular axis, so per (contact face x garage side) there are
+    exactly three cases, and this encodes all twelve:
+      - the contact face IS the Mudroom's own end wall  -> automatic, no clause
+        (the share's own >= door_u already lands on it);
+      - the contact face is the OPPOSITE end wall       -> the Mudroom does not
+        reach it at all; that config is forbidden outright;
+      - the contact face is perpendicular               -> the Mudroom occupies a
+        `mud_x`/`mud_y` slice of it; require the shared segment to cover
+        >= door_u of that slice.
+    All clauses are one-directional implications on the share's own side bools,
+    the same idiom as _force_corridor_overlaps_kitchen / _require_master_bedroom_perimeter:
+    forbidding a config never forbids the GEOMETRY, it only stops the solver
+    using that config as the backbone contact, so the disjunction below can still
+    fall through to the other target. That is what keeps this packable where a
+    hard-forced entry<->corridor edge was INFEASIBLE on the entry-west presets.
+
+    _share_wall's side bools are named for where `a` (entry) sits relative to `b`
+    (the target), so they invert into contact faces of the entry:
+      "W" -> target east of entry  -> contact on the entry's EAST face
+      "E" -> target west of entry  -> contact on the entry's WEST face
+      "S" -> target north of entry -> contact on the entry's NORTH face
+      "N" -> target south of entry -> contact on the entry's SOUTH face
+    """
+    BIG = 10_000
+    # explicit affine helper vars so the Min/Max equalities take plain vars
+    ex0_p = m.NewIntVar(0, BIG, f"{tag}_ex0p")
+    m.Add(ex0_p == entry.x0 + mud_x)
+    ex1_m = m.NewIntVar(0, BIG, f"{tag}_ex1m")
+    m.Add(ex1_m == entry.x1 - mud_x)
+    ey0_p = m.NewIntVar(0, BIG, f"{tag}_ey0p")
+    m.Add(ey0_p == entry.y0 + mud_y)
+    ey1_m = m.NewIntVar(0, BIG, f"{tag}_ey1m")
+    m.Add(ey1_m == entry.y1 - mud_y)
+    gW, gE, gS, gN = gside["W"], gside["E"], gside["S"], gside["N"]
+
+    opts: list[cp_model.IntVar] = []
+    for name, t in targets:
+        sb: dict[str, cp_model.IntVar] = {}
+        opts.append(_share_wall(m, entry, t, door_u, f"{tag}_{name}", sb))
+        # the Mudroom is at the far end of this face -- it never reaches it
+        m.AddBoolOr([sb["W"].Not(), gW.Not()])  # contact E face, Mudroom west
+        m.AddBoolOr([sb["E"].Not(), gE.Not()])  # contact W face, Mudroom east
+        m.AddBoolOr([sb["S"].Not(), gS.Not()])  # contact N face, Mudroom south
+        m.AddBoolOr([sb["N"].Not(), gN.Not()])  # contact S face, Mudroom north
+        # vertical contact (E/W face) x horizontal Mudroom strip (garage S/N):
+        # clip the shared y-segment to the strip and require a door's worth
+        ylo_S = m.NewIntVar(0, BIG, f"{tag}_{name}_yloS")
+        m.AddMaxEquality(ylo_S, [t.y0, entry.y0])
+        yhi_S = m.NewIntVar(0, BIG, f"{tag}_{name}_yhiS")
+        m.AddMinEquality(yhi_S, [t.y1, ey0_p])
+        ylo_N = m.NewIntVar(0, BIG, f"{tag}_{name}_yloN")
+        m.AddMaxEquality(ylo_N, [t.y0, ey1_m])
+        yhi_N = m.NewIntVar(0, BIG, f"{tag}_{name}_yhiN")
+        m.AddMinEquality(yhi_N, [t.y1, entry.y1])
+        for bv in (sb["W"], sb["E"]):
+            m.Add(yhi_S - ylo_S >= door_u).OnlyEnforceIf([bv, gS])
+            m.Add(yhi_N - ylo_N >= door_u).OnlyEnforceIf([bv, gN])
+        # horizontal contact (N/S face) x vertical Mudroom strip (garage W/E)
+        xlo_W = m.NewIntVar(0, BIG, f"{tag}_{name}_xloW")
+        m.AddMaxEquality(xlo_W, [t.x0, entry.x0])
+        xhi_W = m.NewIntVar(0, BIG, f"{tag}_{name}_xhiW")
+        m.AddMinEquality(xhi_W, [t.x1, ex0_p])
+        xlo_E = m.NewIntVar(0, BIG, f"{tag}_{name}_xloE")
+        m.AddMaxEquality(xlo_E, [t.x0, ex1_m])
+        xhi_E = m.NewIntVar(0, BIG, f"{tag}_{name}_xhiE")
+        m.AddMinEquality(xhi_E, [t.x1, entry.x1])
+        for bv in (sb["S"], sb["N"]):
+            m.Add(xhi_W - xlo_W >= door_u).OnlyEnforceIf([bv, gW])
+            m.Add(xhi_E - xlo_E >= door_u).OnlyEnforceIf([bv, gE])
+    if opts:
+        m.AddBoolOr(opts)
+
+
 # Test seam (Task 5 Phase 2). Production is always True: children is connected to
 # the corridor by _force_vertical_cover_center, guaranteeing the hall Bathroom is
 # corridor-DIRECT. Set False to fall back to a plain children<->{corridor,entry}
@@ -578,8 +758,12 @@ def solve(
     # reconciling, then reconcile the brief to the footprint budget: the space
     # targets are rescaled to sum to footprint_target_m2, holding the garage AND
     # the corridor (its target is derived, not a rescalable estimate), so the
-    # solver's area windows and the target-adherence term are measured against a
+    # solver's area windows and the fp_dev footprint term are measured against a
     # self-consistent program with the hall carved out of the habitable budget.
+    # (This used to read "the target-adherence term"; that term was deleted in
+    # Phase 1 -- see the objective block. Reconcile still matters because the
+    # per-zone TARGET it produces feeds the soft brief-minima term and the
+    # AREA_LO/AREA_HI fallback for any zone with no architect band.)
     program, circ_warnings = Z.inject_circulation(program)
     # The guest WC (уборная) is funded the same way and for the same reason: a
     # norm requirement of the PLAN, not of the brief. It raises the entry zone's
@@ -658,17 +842,33 @@ def _solve_once(
 
     present: list[ZoneId] = [z for z in Z.ZONE_ORDER if program.space(z) is not None]
     zv: dict[ZoneId, _ZoneVars] = {}
-    ns_vars: dict[ZoneId, cp_model.IntVar] = {}  # kitchen_laundry cut-axis bit
+    ns_vars: dict[ZoneId, cp_model.IntVar] = {}  # cut-axis bit: kitchen_laundry, entry
     # per-zone info the objective consumes: (zid, v, target_cells, min_w, min_h,
     # brief_w_pref, brief_h_pref) — all dims in grid units.
     zinfo: list[tuple] = []
+    # Zones whose area window came from the architect's table, and any zone whose
+    # Neufert-legal shape FLOOR exceeds that table's ceiling. A contradiction
+    # there means the two sources disagree about what is buildable, and the legal
+    # floor wins (below) — but it must be SAID, not silently resolved, so it
+    # surfaces as a warning on the result.
+    band_zones: list[tuple[str, tuple[float, float]]] = []
+    band_conflicts: list[str] = []
     for zid in present:
         sp = program.space(zid)
         assert sp is not None
         target_cells = sp.target_m2 / (GRID_M * GRID_M)
         target_cells_i = int(round(target_cells))
-        lo_area = int(math.floor(AREA_LO * target_cells))
-        hi_area = min(plot_cells, int(math.ceil(AREA_HI * target_cells)))
+        band = slicer.zone_band(zid)
+        if band is not None:
+            # Architect's band, in cells. Rounded INWARD on both ends (ceil the
+            # floor, floor the ceiling) so grid quantisation can only ever make
+            # the band stricter, never quietly wider than he wrote it.
+            lo_area = int(math.ceil(band[0] / (GRID_M * GRID_M) - 1e-9))
+            hi_area = min(plot_cells, int(math.floor(band[1] / (GRID_M * GRID_M) + 1e-9)))
+            band_zones.append((zid, band))
+        else:
+            lo_area = int(math.floor(AREA_LO * target_cells))
+            hi_area = min(plot_cells, int(math.ceil(AREA_HI * target_cells)))
         # The brief's per-space minima are now SOFT preferences (Task 4b), not
         # hard filters; the HARD floor is the Neufert-legal shape. Keep the brief
         # value for the soft objective term below.
@@ -682,13 +882,20 @@ def _solve_once(
             # the union's tighter shapes (e.g. the 2.5 m N/S kitchen) stay legal.
             min_w = max(1, min(t[0] for t in lp))
             min_h = max(1, min(t[1] for t in lp))
-            # AREA_HI caps sprawl relative to the target, but must never fall
-            # below the zone's smallest legal shape. When reconcile shrinks a
-            # target under its Neufert floor (Task 5: a suite carved down to pay
-            # for the corridor), 1.2*target can dip below the smallest legal pair
-            # and strangle the AllowedAssignments set to empty -> INFEASIBLE. The
-            # hard legal floor wins; the adherence term carries the over-target.
+            # The band must never fall below the zone's smallest legal SHAPE.
+            # A zone whose Neufert-legal floor sits above its band ceiling would
+            # otherwise get an empty window and go INFEASIBLE for a reason no
+            # reader could see. The legal floor wins — a shape that cannot be
+            # built is not made buildable by an area table — and the conflict is
+            # recorded so the disagreement between the two sources is visible.
             floor_area = min(t[0] * t[1] for t in lp)
+            if band is not None and floor_area > hi_area:
+                band_conflicts.append(
+                    f"zone {zid!r}: smallest Neufert-legal shape is "
+                    f"{floor_area * GRID_M * GRID_M:.2f} m2, ABOVE the architect band "
+                    f"ceiling {band[1]:.2f} m2; the legal floor wins and the band "
+                    f"ceiling is raised to it"
+                )
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
             m.Add(v.area >= lo_area)
             m.Add(v.area <= max(hi_area, floor_area))
@@ -716,13 +923,24 @@ def _solve_once(
             # empty [>=floor, <=hi] window.
             floor_area = min_w * min_h
             hi = max(hi_area, floor_area)
-            if zid == "circulation":
-                # The corridor is the flex void-filler and the access spine: the
-                # Phase-2 full-span children constraint can force it tall (a 1.2 m
-                # spine covering a ~7.5 m room stack needs ~11 m2 > 1.2*target).
-                # Uncap its upper area so topology wins; the L1 adherence term
-                # still pulls it back toward the derived target when free to.
-                hi = plot_cells
+            if band is not None and floor_area > hi_area:
+                band_conflicts.append(
+                    f"zone {zid!r}: smallest Neufert-legal shape is "
+                    f"{floor_area * GRID_M * GRID_M:.2f} m2, ABOVE the architect band "
+                    f"ceiling {band[1]:.2f} m2; the legal floor wins and the band "
+                    f"ceiling is raised to it"
+                )
+            # CIRCULATION'S CEILING IS RESTORED (Phase 1). It used to be removed
+            # outright (hi = plot_cells) so the full-span children constraint
+            # could force a tall spine, with the L1 adherence term left to pull
+            # it back. Measured in the Phase 0 audit: it did not pull it back —
+            # the corridor ran at 21.25 m2 against a 9.30 target, 46% of the
+            # house's entire 25.91 m2 overshoot, and carried the single largest
+            # adherence penalty in the model while doing it. The architect's
+            # Corridor band (6-25) is a real ceiling that still clears the span
+            # obligations; if a future span constraint genuinely needs more than
+            # 25 m2 the answer is to raise HIS number with him, not to delete the
+            # bound and hope an objective term compensates.
             m.Add(v.area >= max(floor_area, lo_area))
             m.Add(v.area <= hi)
             asp_i = int(round(100 * aspect))
@@ -758,6 +976,12 @@ def _solve_once(
             else:
                 sh = _share_wall(m, zv[a], zv[b], share_min, f"req_{a}_{b}")
                 m.Add(sh == 1)
+    # entry's cut axis has no REQUIRED_ADJ to hang off (garage<->entry is only a
+    # DESIRABLE), so it is tied to the garage's position instead of its wall.
+    if "entry" in ns_vars and "entry" in zv and "garage" in zv:
+        cut_axis_bools["entry"] = _tie_axis_to_position(
+            m, zv["entry"], zv["garage"], ns_vars["entry"], "axis_entry_garage"
+        )
 
     # forbidden adjacency (hard). Program-controlled: program.adjacency.avoid,
     # defaulting to zones.DEFAULT_AVOID when the caller left it empty.
@@ -815,7 +1039,23 @@ def _solve_once(
 
     if circ in zv:
         _attach(circ, ["entry", "living"], "acc_circ")        # backbone anchor
-        _attach("entry", [circ, "living"], "acc_entry")       # backbone
+        # F: entry's backbone attach is hardened to ROOM level -- the segment must
+        # reach the Mudroom band, hence (by _split_off_wc's Foyer-adjacent-to-
+        # Mudroom invariant) the Foyer, which is the access-tree root. Plain
+        # _attach only bound the ZONE and let the contact land on the
+        # no_through_traffic Guest WC. Same disjunction semantics, same targets.
+        entry_backbone = [(t, zv[t]) for t in (circ, "living") if t in zv]
+        if "entry" in zv and entry_backbone and "entry" in cut_axis_bools:
+            _force_backbone_reaches_foyer(
+                m, zv["entry"], entry_backbone, cut_axis_bools["entry"],
+                _ceil_u(standards.ROOMS["Mudroom"].min_w_m),
+                _ceil_u(standards.ROOMS["Mudroom"].min_h_m),
+                door_u, "acc_entry",
+            )
+        else:
+            # no garage -> no recorded cut axis -> no known Mudroom end. Fall back
+            # to the zone-level attach rather than guessing which end it took.
+            _attach("entry", [circ, "living"], "acc_entry")
         _attach("living", [circ, "entry"], "acc_living")      # backbone
         # G: Garage's access parent must be a room the tier-2 rule actually
         # permits (Garage.allowed_ensuite_parents = Mudroom/Foyer, both inside the
@@ -990,22 +1230,38 @@ def _solve_once(
     # terms that inflate zones to the band ceiling for nothing — so area stops
     # sloshing; but it stays BELOW the soft-adjacency reward (40*plot_cells/bool)
     # so a genuinely better-connected plan can still spend a few m2 off-target.
-    # It must DECISIVELY beat coverage (not just edge it): coverage rewards
-    # total_area globally (1200/cell), so a thin margin leaves zones parked just
-    # above target — measured: dining only reaches its reconciled target at
-    # ADHERE >= 6000. Kept below the soft-adjacency reward (40*plot_cells/bool ~=
-    # 30k) so a desirable can still pull a zone ~1 m2 off target when it pays.
-    ADHERE = 6000
-    for zid, v, tcells, *_ in zinfo:
-        dev = m.NewIntVar(0, plot_cells, f"{zid}_adh")
-        m.Add(dev >= v.area - tcells)
-        m.Add(dev >= tcells - v.area)
-        obj_terms.append(-ADHERE * dev)
+    #
+    # DELETED IN PHASE 1 — the paragraph above is kept as the record of what it
+    # was. Three measured reasons, all from the Phase 0 audit:
+    #
+    #   1. It penalised zones for OBEYING HARD CONSTRAINTS. Exact tiling forces
+    #      the zones to fill their rectangle, and master_suite's Neufert-legal
+    #      floor (27.50 m2 then, 30.00 now that slicing is area-aware) EXCEEDS
+    #      its reconciled target of 25.35 — so that zone's penalty was
+    #      unavoidable at every possible setting. Not a preference; noise with a
+    #      weight on it.
+    #   2. It was 58% of all penalty mass and 4.5x the magnitude of the NET
+    #      objective, swamping the adjacency rewards that encode design quality.
+    #   3. It DESTROYED the ranking it existed to protect: both presets scored
+    #      exactly -840000 by completely different routes and tied at -97.5625,
+    #      so generate() could not tell two different plans apart.
+    #
+    # Its real job — stopping area sloshing inside a loose proportional window —
+    # is now done hard by the architect's bands. A band is also the honest
+    # encoding of what he supplied: min-max ranges, not point targets. A room
+    # anywhere inside its band is correct, and there is no sense in which a
+    # 22 m2 Living is worse than a 21 m2 one.
+    #
+    # fp_dev survives and is now the term that carries house size (his ~40% site
+    # coverage), a job it could not do while the footprint was pinned at 210.0
+    # regardless of what the target said.
 
     # soft brief-minima (Task 4b): a brief min ABOVE the Neufert floor is a weak
     # preference, not a veto. Penalise only the shortfall below it, and weakly, so
     # a tighter Neufert-legal shape that packs better (the 2.5 m N/S kitchen vs
-    # the LLM's 4.0 m guess) is still chosen when the packing/adherence gain pays.
+    # the LLM's 4.0 m guess) is still chosen when the packing gain pays. (Read
+    # "packing/adherence" here before Phase 1 deleted the adherence term; the
+    # trade is now purely against coverage and the soft adjacency rewards.)
     SOFT_MIN = 60
     for zid, v, tcells, min_w, min_h, pref_w, pref_h in zinfo:
         if pref_w > min_w:
@@ -1076,4 +1332,7 @@ def _solve_once(
         footprint_m=footprint_m,
         cut_sides=cut_sides,
         corridor_sides=corridor_sides,
+        # Surfaced, not swallowed: where the Neufert-legal shape floor and the
+        # architect's band ceiling disagree, the reader gets to see it.
+        warnings=list(band_conflicts),
     )

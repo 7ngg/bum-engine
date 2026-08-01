@@ -89,6 +89,38 @@ class _WallRec:
 # ---------------------------------------------------------------------------
 
 
+def _grid_steps(lo: float, hi: float):
+    """Grid-aligned candidate depths in [lo, hi], smallest first. `lo` is
+    ceil-snapped (it carries a minimum), `hi` is floor-snapped (it is a
+    ceiling). Empty when the band cannot be realised on the grid at all —
+    callers MUST treat that as 'no legal cut', never as 'use lo anyway'."""
+    a = _ceil_snap(lo)
+    steps = []
+    v = a
+    while v <= hi + geom.EPS:
+        steps.append(round(v, 10))
+        v += GRID_M
+    return steps
+
+
+def _in_band(name: str, rect: geom.Rect) -> bool:
+    """Does this sub-room satisfy BOTH sources: the Neufert/SNiP shape floor
+    (min dims, min area, aspect) AND the architect's area band?
+
+    This is the single predicate that makes slicing area-aware. It is also what
+    legal_pairs() probes through, so a zone SHAPE whose cut would violate a band
+    is never offered to the solver in the first place — the band is enforced at
+    two levels that cannot disagree, because they call this same function."""
+    if not _room_legal(name, rect):
+        return False
+    x0, y0, x1, y1 = rect
+    a = (x1 - x0) * (y1 - y0)
+    return (
+        a >= standards.area_floor(name) - geom.EPS
+        and a <= standards.area_ceiling(name) + geom.EPS
+    )
+
+
 def _side_of(r: geom.Rect, other: geom.Rect) -> str:
     """Which side of r the other rect lies on: 'N','S','E','W'."""
     e = geom.shared_edge(r, other)
@@ -124,30 +156,44 @@ def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRo
     mbath = standards.ROOMS["Master Bathroom"]
     wic = standards.ROOMS["Walk-in Closet"]
     mbed = standards.ROOMS["Master Bedroom"]
-    # Service strip (Bathroom | Closet) deep enough for both; Bedroom takes ALL
-    # surplus depth. Bathroom gets its min width; Closet takes the rest.
-    service = _ceil_snap(max(mbath.min_h_m, wic.min_h_m))  # min-carrying -> ceil
-    bath_w = _ceil_snap(mbath.min_w_m)                     # min-carrying -> ceil
-    if (
-        (h - service) < mbed.min_h_m
-        or w < mbed.min_w_m
-        or (w - bath_w) < wic.min_w_m
-    ):
-        return [FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, y1))]
-    mid = x0 + bath_w
-    if corridor_side == "N":
-        sy = y0 + service  # service strip SOUTH, Bedroom the NORTH band
-        return [
-            FinalRoom("Master Bathroom", "wet", r.zone, (x0, y0, mid, sy)),
-            FinalRoom("Walk-in Closet", "private", r.zone, (mid, y0, x1, sy)),
-            FinalRoom("Master Bedroom", "private", r.zone, (x0, sy, x1, y1)),
-        ]
-    sy = y1 - service  # position: aligned edge - aligned dim, no snap needed
-    return [
-        FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, sy)),
-        FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy, mid, y1)),
-        FinalRoom("Walk-in Closet", "private", r.zone, (mid, sy, x1, y1)),
-    ]
+    # AREA-AWARE STRIP DEPTH (Phase 1). This used to be a FIXED 2.5 m service
+    # strip — ceil_snap(max(bath.min_h, closet.min_h)) — with the Bedroom taking
+    # all surplus depth. That is why a 27.5 m2 suite handed the Bedroom 15.0 m2
+    # and the bath+closet 12.5, while the architect's own minimums are
+    # 16 + 5 + 4 = 25 with room to spare: the cut never looked at an area at all.
+    #
+    # Now both free dimensions are SEARCHED on the grid, smallest strip first
+    # (the Bedroom is the room that wants the surplus), and the first combination
+    # that puts ALL THREE rooms inside their bands wins. Ascending order also
+    # handles the opposite failure by itself: if the smallest strip leaves the
+    # Bedroom ABOVE its 30 m2 ceiling, a deeper strip is tried until it isn't.
+    service_lo = max(mbath.min_h_m, wic.min_h_m)
+    bath_lo = mbath.min_w_m
+    for service in _grid_steps(service_lo, h - _ceil_snap(mbed.min_h_m)):
+        for bath_w in _grid_steps(bath_lo, w - _ceil_snap(wic.min_w_m)):
+            bed_rect = ((x0, y0, x1, y1 - service) if corridor_side != "N"
+                        else (x0, y0 + service, x1, y1))
+            sy0, sy1 = ((y1 - service, y1) if corridor_side != "N" else (y0, y0 + service))
+            if (
+                _in_band("Master Bedroom", bed_rect)
+                and _in_band("Master Bathroom", (x0, sy0, x0 + bath_w, sy1))
+                and _in_band("Walk-in Closet", (x0 + bath_w, sy0, x1, sy1))
+            ):
+                if corridor_side == "N":
+                    return [
+                        FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy0, x0 + bath_w, sy1)),
+                        FinalRoom("Walk-in Closet", "private", r.zone, (x0 + bath_w, sy0, x1, sy1)),
+                        FinalRoom("Master Bedroom", "private", r.zone, bed_rect),
+                    ]
+                return [
+                    FinalRoom("Master Bedroom", "private", r.zone, bed_rect),
+                    FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy0, x0 + bath_w, sy1)),
+                    FinalRoom("Walk-in Closet", "private", r.zone, (x0 + bath_w, sy0, x1, sy1)),
+                ]
+    # No grid-legal three-way cut. Fall back to the whole zone as one Bedroom,
+    # exactly as before — legal_pairs() probes this function, so the solver is
+    # not offered a shape that lands here in the first place.
+    return [FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
 
 def _slice_children(r: ZoneRect) -> list[FinalRoom]:
@@ -155,23 +201,41 @@ def _slice_children(r: ZoneRect) -> list[FinalRoom]:
     w, h = x1 - x0, y1 - y0
     bathroom = standards.ROOMS["Bathroom"]
     bed = standards.ROOMS["Bedroom"]
-    # three horizontal bands so both beds run along the (vertical) exterior wall.
-    # Middle Bathroom gets its min DEPTH (ceil-snapped); the two beds split the
-    # remaining depth. The divider between the two equal-minimum beds is a free
-    # midpoint -> _snap; we assert each resulting bed clears the Bedroom minimum.
-    bath_h = _ceil_snap(bathroom.min_h_m)  # min-carrying -> ceil (2.2 -> 2.5)
-    rest = h - bath_h
-    top = _snap(rest / 2)  # free midpoint between the two beds
-    bot = rest - top
-    if w < max(bed.min_w_m, bathroom.min_w_m) or top < bed.min_h_m or bot < bed.min_h_m:
-        return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
-    a = y0 + top
-    b = a + bath_h
-    return [
-        FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, x1, a)),
-        FinalRoom("Bathroom", "wet", r.zone, (x0, a, x1, b)),
-        FinalRoom("Bedroom 3", "private", r.zone, (x0, b, x1, y1)),
-    ]
+    # Three horizontal bands so both beds run along the (vertical) exterior wall.
+    #
+    # AREA-AWARE (Phase 1). The middle Bathroom used to take its min DEPTH
+    # unconditionally and the two beds split whatever remained, so on a 3.5 m
+    # wide zone both beds came out at 10.5 m2 against a 12 m2 minimum. Both the
+    # bathroom depth AND the bed divider are now searched on the grid.
+    #
+    # The Bathroom is the room with a real CEILING here (9 m2) and it spans the
+    # full zone width, so on a wide zone its minimum depth can already exceed its
+    # maximum area — 4.0 m wide x 2.5 m minimum depth = 10.0 > 9. That is a
+    # genuine grid/band contradiction, not something to round away: this function
+    # returns no 3-way cut for such a shape, and because legal_pairs() probes it,
+    # the solver is never offered that zone width. See the Phase 1 report.
+    for bath_h in _grid_steps(bathroom.min_h_m, h - 2 * _ceil_snap(bed.min_h_m)):
+        rest = h - bath_h
+        # Prefer the most even split (the two beds share a minimum), then walk
+        # outward — an uneven split is still better than no split.
+        mid = _snap(rest / 2)
+        cands = sorted(
+            _grid_steps(bed.min_h_m, rest - _ceil_snap(bed.min_h_m)),
+            key=lambda t: (abs(t - mid), t),
+        )
+        for top in cands:
+            a, b = y0 + top, y0 + top + bath_h
+            if (
+                _in_band("Bedroom 2", (x0, y0, x1, a))
+                and _in_band("Bathroom", (x0, a, x1, b))
+                and _in_band("Bedroom 3", (x0, b, x1, y1))
+            ):
+                return [
+                    FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, x1, a)),
+                    FinalRoom("Bathroom", "wet", r.zone, (x0, a, x1, b)),
+                    FinalRoom("Bedroom 3", "private", r.zone, (x0, b, x1, y1)),
+                ]
+    return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
 
 def _slice_kitchen(
@@ -204,77 +268,120 @@ def _slice_kitchen(
     place_side = side
     if corridor_side is not None and (corridor_side in ("N", "S")) == axis_ns:
         place_side = corridor_side
-    # Laundry gets its min strip (ceil-snapped) on the cut axis; Kitchen keeps
-    # the `place_side` edge and takes ALL the surplus. No magic fraction.
+    # AREA-AWARE (Phase 1). The Laundry strip used to be pinned at its minimum
+    # depth with the Kitchen taking all the surplus; the depth is now searched on
+    # the grid, smallest first, so the Kitchen still gets the surplus but the
+    # Laundry's own 4-10 m2 band is respected on both ends. Ascending order means
+    # a Laundry over its 10 m2 ceiling never survives — it is the first candidate
+    # to be rejected, and the search moves on rather than shipping it.
     if axis_ns:
-        depth = _ceil_snap(laundry.min_h_m)  # Laundry Y-depth
-        if (h - depth) < kitchen.min_h_m or w < max(kitchen.min_w_m, laundry.min_w_m):
-            return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
-        if place_side == "S":  # kitchen south, laundry north
-            ky = y1 - depth
-            return [
-                FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, ky)),
-                FinalRoom("Laundry", "service", r.zone, (x0, ky, x1, y1)),
-            ]
-        ly = y0 + depth
-        return [
-            FinalRoom("Laundry", "service", r.zone, (x0, y0, x1, ly)),
-            FinalRoom("Kitchen", "wet", r.zone, (x0, ly, x1, y1)),
-        ]
-    depth = _ceil_snap(laundry.min_w_m)  # Laundry X-depth
-    if (w - depth) < kitchen.min_w_m or h < max(kitchen.min_h_m, laundry.min_h_m):
+        for depth in _grid_steps(laundry.min_h_m, h - _ceil_snap(kitchen.min_h_m)):
+            if place_side == "S":  # kitchen south, laundry north
+                k_rect, l_rect = (x0, y0, x1, y1 - depth), (x0, y1 - depth, x1, y1)
+            else:
+                k_rect, l_rect = (x0, y0 + depth, x1, y1), (x0, y0, x1, y0 + depth)
+            if _in_band("Kitchen", k_rect) and _in_band("Laundry", l_rect):
+                k = FinalRoom("Kitchen", "wet", r.zone, k_rect)
+                lr = FinalRoom("Laundry", "service", r.zone, l_rect)
+                return [k, lr] if place_side == "S" else [lr, k]
         return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
-    if place_side == "W":  # kitchen west, laundry east
-        kx = x1 - depth
-        return [
-            FinalRoom("Kitchen", "wet", r.zone, (x0, y0, kx, y1)),
-            FinalRoom("Laundry", "service", r.zone, (kx, y0, x1, y1)),
-        ]
-    lx = x0 + depth
-    return [
-        FinalRoom("Laundry", "service", r.zone, (x0, y0, lx, y1)),
-        FinalRoom("Kitchen", "wet", r.zone, (lx, y0, x1, y1)),
-    ]
+    for depth in _grid_steps(laundry.min_w_m, w - _ceil_snap(kitchen.min_w_m)):
+        if place_side == "W":  # kitchen west, laundry east
+            k_rect, l_rect = (x0, y0, x1 - depth, y1), (x1 - depth, y0, x1, y1)
+        else:
+            k_rect, l_rect = (x0 + depth, y0, x1, y1), (x0, y0, x0 + depth, y1)
+        if _in_band("Kitchen", k_rect) and _in_band("Laundry", l_rect):
+            k = FinalRoom("Kitchen", "wet", r.zone, k_rect)
+            lr = FinalRoom("Laundry", "service", r.zone, l_rect)
+            return [k, lr] if place_side == "W" else [lr, k]
+    return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
 
 
 def _split_off_wc(
-    zone: str, rect: geom.Rect, along_x: bool
+    zone: str, rect: geom.Rect, along_x: bool, mud_side: str | None = None
 ) -> list[FinalRoom] | None:
-    """Carve the Guest WC off the SOUTH (or WEST) end of the Foyer remainder.
+    """Carve the Guest WC off one end of the Foyer remainder.
 
-    Returns [Guest WC, Foyer] in that order, or None if the remainder cannot
-    give the WC its minimum without dropping the Foyer below its own.
+    Returns [Guest WC, Foyer] or [Foyer, Guest WC] — always in GEOMETRIC order,
+    low coordinate first, so _slice_entry's `[mud_room, *split]` /
+    `[*split, mud_room]` stays a truthful description of the strip order — or
+    None if the remainder cannot give the WC its minimum without dropping the
+    Foyer below its own.
 
     WHICH END, and why it is not arbitrary: the Foyer has two jobs the WC must
     not take from it — it carries the front door (so it needs the STREET-facing
-    exterior wall, +y in the solver's fixed frame) and it fronts the corridor.
-    Both presets pin the entry zone to the north edge, so the WC takes the y0
-    (south) end and the Foyer keeps the north wall and its corridor contact.
-    South is also where kitchen_laundry sits, which is what puts the WC against
-    the wet cluster the architect and the Posobie both ask for — see
-    _slice_entry. On an N/S-cut zone the same reasoning runs along x and the WC
-    takes the x0 end.
+    exterior wall, +y in the solver's fixed frame) and it is the access-tree
+    ROOT, so it must stay connected to the rest of the house. Both presets pin
+    the entry zone to the north edge, so on the axis PERPENDICULAR to the
+    Mudroom cut the WC takes the y0 (south) / x0 (west) end and the Foyer keeps
+    the north wall. South is also where kitchen_laundry sits, which is what puts
+    the WC against the wet cluster the architect and the Posobie both ask for —
+    see _slice_entry.
+
+    `mud_side` is the end the Mudroom took, and it exists because of a defect
+    this function shipped: when the split runs along the SAME axis as the
+    Mudroom cut, taking the low end unconditionally drops the WC BETWEEN the
+    Mudroom and the Foyer. Guest WC is no_through_traffic, so that severs the
+    Foyer from the Mudroom -> Corridor chain and orphans the whole house from
+    its own root. Measured at target 192, preset gW_eN: strip order came out
+    Mudroom | Guest WC | Foyer and access_tree reached 3 of 16 rooms; the mirror
+    preset gE_eN reached 16 of 16 purely because its Mudroom sits at the far end
+    and the same low-end rule happened to land the WC correctly. So: when the
+    Mudroom holds the low end of this axis, the WC takes the HIGH end. The
+    resulting invariant, which now holds in all eight (side x axis) cases, is
+    that the FOYER IS ALWAYS ADJACENT TO THE MUDROOM, over at least the Foyer's
+    own minimum dimension (>= 1.5 m, comfortably above ACCESS_DOOR_M).
+
+    AREA-AWARE (Phase 1). The depth used to be pinned at ceil_snap(1.3) = 1.5 m
+    and the WC spanned the remainder's FULL width, which on a 3.0 m wide entry
+    gave 3.0 x 1.5 = 4.5 m2 against the architect's 3.5 m2 ceiling. The depth is
+    now searched on the grid and the result must land inside the band, so the
+    3.5 ceiling is enforced rather than discovered afterwards. The WC still spans
+    the full width of the remainder — it stays a BAND, not a corner cut, because
+    a corner would leave the Foyer L-shaped and every downstream stage (wall
+    rasterisation, door hosting, the Revit builder) assumes rectangles. On this
+    plot the band lands at 2.0 x 1.5 = 3.0 m2, which is the architect's own
+    suggested figure.
     """
     x0, y0, x1, y1 = rect
     wc = standards.ROOMS["Guest WC"]
     foy = standards.ROOMS["Foyer"]
-    if along_x:
-        depth = _ceil_snap(wc.min_w_m)  # WC X-depth
-        if (x1 - x0) - depth < foy.min_w_m or (y1 - y0) < max(foy.min_h_m, wc.min_h_m):
-            return None
-        wx = x0 + depth
-        return [
-            FinalRoom("Guest WC", "wet", zone, (x0, y0, wx, y1)),
-            FinalRoom("Foyer", "circ", zone, (wx, y0, x1, y1)),
-        ]
-    depth = _ceil_snap(wc.min_h_m)  # WC Y-depth
-    if (y1 - y0) - depth < foy.min_h_m or (x1 - x0) < max(foy.min_w_m, wc.min_w_m):
+
+    def try_axis(ax: bool):
+        if ax:
+            steps = _grid_steps(wc.min_w_m, (x1 - x0) - _ceil_snap(foy.min_w_m))
+            if mud_side == "W":  # Mudroom holds x0 -> WC takes the x1 end
+                mk = lambda d: ((x1 - d, y0, x1, y1), (x0, y0, x1 - d, y1))
+            else:
+                mk = lambda d: ((x0, y0, x0 + d, y1), (x0 + d, y0, x1, y1))
+        else:
+            steps = _grid_steps(wc.min_h_m, (y1 - y0) - _ceil_snap(foy.min_h_m))
+            if mud_side == "S":  # Mudroom holds y0 -> WC takes the y1 end
+                mk = lambda d: ((x0, y1 - d, x1, y1), (x0, y0, x1, y1 - d))
+            else:
+                mk = lambda d: ((x0, y0, x1, y0 + d), (x0, y0 + d, x1, y1))
+        for depth in steps:
+            wc_rect, foy_rect = mk(depth)
+            if _in_band("Guest WC", wc_rect) and _in_band("Foyer", foy_rect):
+                wc_room = FinalRoom("Guest WC", "wet", zone, wc_rect)
+                foy_room = FinalRoom("Foyer", "circ", zone, foy_rect)
+                lo_first = (wc_rect[0], wc_rect[1]) < (foy_rect[0], foy_rect[1])
+                return [wc_room, foy_room] if lo_first else [foy_room, wc_room]
         return None
-    wy = y0 + depth
-    return [
-        FinalRoom("Guest WC", "wet", zone, (x0, y0, x1, wy)),
-        FinalRoom("Foyer", "circ", zone, (x0, wy, x1, y1)),
-    ]
+
+    # `along_x` is the PREFERRED axis (it is the one whose end-choice reasoning
+    # is documented above), but the other axis is tried as a fallback rather than
+    # giving up. Why this matters: the architect's 3.5 m2 WC ceiling is only ~1.5
+    # grid cells of area, so on a 0.5 m grid the ONLY realisable WC rectangles are
+    # 1.5 x 1.5 = 2.25 and 1.5 x 2.0 = 3.0 (2.5 x 1.5 = 3.75 is already over).
+    # Committing to one axis therefore threw away half of an already tiny set and
+    # collapsed the entry zone to a SINGLE legal shape — measured, and with exact
+    # tiling on it made the whole plan INFEASIBLE. Both sub-rooms stay rectangles
+    # and the WC still lands against the Foyer either way, so the fallback costs
+    # no guarantee — but only now that `mud_side` picks its end. Measured: 6
+    # legal entry shapes on the preferred axis alone vs 25 with the fallback, so
+    # dropping the fallback is not an option; picking the right end is.
+    return try_axis(along_x) or try_axis(not along_x)
 
 
 def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
@@ -324,7 +431,9 @@ def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
             rest = (x0, y0, mx, y1)
         # W/E cut -> the Mudroom strip runs the full depth, so the WC splits the
         # remainder along y (south end), keeping the Foyer's north wall free.
-        split = _split_off_wc(r.zone, rest, along_x=False)
+        # `mud_side` matters only if that fails and the x fallback runs: there the
+        # WC must take the end AWAY from the Mudroom or it severs the Foyer.
+        split = _split_off_wc(r.zone, rest, along_x=False, mud_side=side)
         if split is None:
             return [mud_room, FinalRoom("Foyer", "circ", r.zone, rest)] if side == "W" else [
                 FinalRoom("Foyer", "circ", r.zone, rest), mud_room]
@@ -341,8 +450,9 @@ def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
         mud_room = FinalRoom("Mudroom", "service", r.zone, (x0, my, x1, y1))
         rest = (x0, y0, x1, my)
     # N/S cut -> the Mudroom strip runs the full width, so the WC splits the
-    # remainder along x (west end).
-    split = _split_off_wc(r.zone, rest, along_x=True)
+    # remainder along x (west end); the y fallback takes the end away from the
+    # Mudroom (see _split_off_wc's `mud_side`).
+    split = _split_off_wc(r.zone, rest, along_x=True, mud_side=side)
     if split is None:
         return [mud_room, FinalRoom("Foyer", "circ", r.zone, rest)] if side == "S" else [
             FinalRoom("Foyer", "circ", r.zone, rest), mud_room]
@@ -365,34 +475,62 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
     garage = by_zone.get("garage")
     cut_sides = getattr(result, "cut_sides", {}) or {}
     # kitchen_laundry cut axis is the SOLVER's decision (it constrained the shape
-    # to match). entry's is read straight from geometry (its table is legal on
-    # both axes). Fall back to geometry only if the solver didn't record one.
+    # to match). Fall back to geometry only if the solver didn't record one.
     kl_side = cut_sides.get("kitchen_laundry")
     if kl_side is None and "kitchen_laundry" in by_zone and dining is not None:
         kl_side = _side_of(tuple(by_zone["kitchen_laundry"].rect_m), tuple(dining.rect_m))
-    entry_side = None
-    if "entry" in by_zone and garage is not None:
+    # entry's cut axis is now the SOLVER's decision too (solver._tie_axis_to_position
+    # binds it to the garage's centroid side, and its shape table is the union of
+    # the two axes). Read it, exactly as kitchen_laundry does, so the shape the
+    # solver constrained and the cut the slicer performs cannot disagree. Fall
+    # back to geometry only when the solver did not record one — an older result,
+    # or a program with no garage.
+    entry_side = cut_sides.get("entry")
+    if entry_side is None and "entry" in by_zone and garage is not None:
         entry_side = _side_of(tuple(by_zone["entry"].rect_m), tuple(garage.rect_m))
     corridor_sides = getattr(result, "corridor_sides", {}) or {}
     master_corridor_side = corridor_sides.get("master_suite")
     kl_corridor_side = corridor_sides.get("kitchen_laundry")
+    degraded: list[str] = []
     rooms: list[FinalRoom] = []
     for zr in result.rects:
         z = zr.zone
-        if z == "master_suite":
-            rooms += _slice_master(zr, master_corridor_side)
-        elif z == "children":
-            rooms += _slice_children(zr)
-        elif z == "kitchen_laundry":
-            rooms += _slice_kitchen(zr, kl_side, kl_corridor_side)
-        elif z == "entry":
-            rooms += _slice_entry(zr, entry_side)
+        if z in _COMPOSITE:
+            if z == "master_suite":
+                cut = _slice_master(zr, master_corridor_side)
+            elif z == "children":
+                cut = _slice_children(zr)
+            elif z == "kitchen_laundry":
+                cut = _slice_kitchen(zr, kl_side, kl_corridor_side)
+            else:
+                cut = _slice_entry(zr, entry_side)
+            # Every composite cutter still DEGRADES rather than raising when the
+            # zone cannot hold all its members (a single Master Bedroom, a single
+            # Children Bedroom, a Kitchen with no Laundry, an entry with no Guest
+            # WC). Degrading is the right behaviour -- a warning that names the
+            # problem is worth more than an exception that kills an otherwise
+            # valid solve -- but it must not be SILENT, which is what it was.
+            # One central check instead of four scattered emitters: it cannot be
+            # forgotten when a fifth cutter is added, and it reads the intended
+            # decomposition from zone_members() rather than a hand-kept list.
+            msg = _degradation_warning(z, zr, cut)
+            if msg is not None:
+                degraded.append(msg)
+            rooms += cut
         elif z in _SIMPLE_NAME:
             name, cat = _SIMPLE_NAME[z]
             rooms.append(FinalRoom(name, cat, z, tuple(zr.rect_m)))
         else:
             name = Z.ZONE_DISPLAY.get(z, z.title())
             rooms.append(FinalRoom(name, "living", z, tuple(zr.rect_m)))
+    # Same channel band_conflicts uses: SolveResult.warnings, which generate.py
+    # prepends to Layout.warnings before validate() seeds its own list from it.
+    # Deduped because slice_zones is called more than once per result on some
+    # paths (build_layout, plus SVG/report readers) and a repeated line reads
+    # like two separate defects.
+    for msg in degraded:
+        if msg not in result.warnings:
+            result.warnings.append(msg)
     return rooms
 
 
@@ -419,11 +557,20 @@ _STEPS = range(2, 31)        # candidate dimension in grid units: 1.0 .. 15.0 m
 
 # Composite zones the slicer subdivides.
 _COMPOSITE = {"master_suite", "children", "kitchen_laundry", "entry"}
-# kitchen_laundry alone gets a UNION table + a solver cut-axis var: its
-# intersection (both-axis-legal) would cost 22.5 vs the 12.5/13.5 single axes.
-# entry uses the intersection (0.85*target nearly binds there anyway), so its cut
-# stays axis-agnostic and needs no solver var; master/children are single-axis.
-_AXIAL = {"kitchen_laundry"}
+# kitchen_laundry and entry get a UNION table + a solver cut-axis var: the
+# intersection (both-axis-legal) would cost kitchen_laundry 22.5 vs the 12.5/13.5
+# single axes. master/children are single-axis and need neither.
+# PHASE 1: `entry` joined kitchen_laundry here. It used the INTERSECTION (legal
+# on BOTH cut axes) because its cut side was read straight from geometry, and at
+# the time "0.85*target nearly binds there anyway" made that cheap. The
+# architect's 3.5 m2 Guest WC ceiling ended that: on a 0.5 m grid the only WC
+# rectangles under it are 1.5 x 1.5 and 1.5 x 2.0, and requiring one shape to
+# work on BOTH axes collapsed the whole entry table to a SINGLE rectangle
+# (3.5 x 4.0). Measured: with exact tiling on, one fixed entry rectangle makes
+# the entire plan INFEASIBLE. Each axis alone admits 11-14 shapes, so the union
+# plus a solver cut-axis var — exactly the kitchen_laundry pattern — is what
+# makes the band adoptable at all.
+_AXIAL = {"kitchen_laundry", "entry"}
 
 # non-composite zone -> its single room standard (envelope = that room).
 _ZONE_ROOM = {
@@ -467,8 +614,23 @@ def _slice_probe(zone_id: str, w: float, h: float, side: str | None) -> list[Fin
 
 
 def _legal_1(zone_id: str, w: float, h: float, side: str | None) -> bool:
+    """Is this zone shape one the slicer can cut into a FULL, IN-BAND set of
+    rooms?
+
+    Two conditions, and the second was added in Phase 1 after it bit us:
+      - every emitted room is inside BOTH its Neufert shape floor and the
+        architect's area band (_in_band), and
+      - the cut is COMPLETE — it emits as many rooms as the zone's intended
+        decomposition, not a degraded one.
+
+    Without the completeness test a shape whose entry cut silently dropped the
+    Guest WC still counted as legal (2 rooms >= 2), the solver picked it, and the
+    plan shipped a 13.5 m2 Foyer and no WC at all. A partial cut is not a legal
+    cut; it is the slicer telling us this shape does not work."""
     rooms = _slice_probe(zone_id, w, h, side)
-    return len(rooms) >= 2 and all(_room_legal(rm.name, rm.rect) for rm in rooms)
+    if len(rooms) < len(zone_members(zone_id)):
+        return False
+    return len(rooms) >= 2 and all(_in_band(rm.name, rm.rect) for rm in rooms)
 
 
 def legal_pairs(zone_id: str):
@@ -494,14 +656,6 @@ def legal_pairs(zone_id: str):
                     pairs.append((wu, hu, 1))
                 if _legal_1(zone_id, w, h, _WE_REP):
                     pairs.append((wu, hu, 0))
-    elif zone_id == "entry":  # intersection: legal on BOTH axes
-        pairs = [
-            (wu, hu)
-            for wu in _STEPS
-            for hu in _STEPS
-            if _legal_1(zone_id, wu * GRID_M, hu * GRID_M, _NS_REP)
-            and _legal_1(zone_id, wu * GRID_M, hu * GRID_M, _WE_REP)
-        ]
     else:  # master_suite / children: single orientation
         pairs = [
             (wu, hu)
@@ -511,6 +665,102 @@ def legal_pairs(zone_id: str):
         ]
     _PAIRS_CACHE[zone_id] = pairs
     return pairs
+
+
+_MEMBERS_CACHE: dict[str, tuple[str, ...]] = {}
+_BAND_CACHE: dict[str, object] = {}
+
+
+def zone_members(zone_id: str) -> tuple[str, ...]:
+    """The room names this zone slices into, READ OFF THE REAL CUTTERS rather
+    than hand-listed. Probes every legal (w, h) and keeps the FULLEST split —
+    a composite zone degrades to fewer rooms when it is too small, and the band
+    must be derived from the intended decomposition, not from a degenerate one.
+
+    Deriving membership instead of tabulating it is the same discipline as
+    compute_zone_minima: change a cutter and the band re-derives itself, so the
+    two cannot drift apart silently."""
+    if zone_id in _MEMBERS_CACHE:
+        return _MEMBERS_CACHE[zone_id]
+    room = _ZONE_ROOM.get(zone_id)
+    if room is not None:
+        _MEMBERS_CACHE[zone_id] = (room,)
+        return _MEMBERS_CACHE[zone_id]
+    # Probed over the RAW grid against the Neufert floor only — deliberately NOT
+    # via legal_pairs(), which now calls back into this function through
+    # _legal_1's completeness test. Membership is "what does the cutter emit when
+    # it succeeds", a question that must be answerable before the band is applied.
+    best: tuple[str, ...] = ()
+    for wu in _STEPS:
+        for hu in _STEPS:
+            # Probe BOTH representative sides. master_suite/children ignore
+            # `side`, but kitchen_laundry and entry key their whole cut off it —
+            # passing None there makes _slice_entry return a bare Foyer and
+            # silently understate the zone's membership (and hence its band).
+            for side in (_NS_REP, _WE_REP):
+                rooms = _slice_probe(zone_id, wu * GRID_M, hu * GRID_M, side)
+                if len(rooms) > len(best) and all(_room_legal(r.name, r.rect) for r in rooms):
+                    best = tuple(r.name for r in rooms)
+    _MEMBERS_CACHE[zone_id] = best
+    return best
+
+
+def zone_band(zone_id: str) -> tuple[float, float] | None:
+    """(lo, hi) area band for a solver zone: the sum of its member rooms' own
+    architect bands. None when no member carries one.
+
+    This is what replaces AREA_LO/AREA_HI. A proportional window around a
+    reconciled target could not express "this zone holds a 16-30 bedroom, a 5-12
+    bath and a 4-12 closet"; summing the members can, and it is the only form in
+    which the architect's table can reach the solver at all."""
+    if zone_id in _BAND_CACHE:
+        return _BAND_CACHE[zone_id]
+    members = zone_members(zone_id)
+    bands = [standards.architect_band(n) for n in members]
+    out = None
+    if members and all(b is not None for b in bands):
+        out = (round(sum(b[0] for b in bands), 4), round(sum(b[1] for b in bands), 4))
+    _BAND_CACHE[zone_id] = out
+    return out
+
+
+def _degradation_warning(zone_id: str, zr: ZoneRect, emitted: list[FinalRoom]) -> str | None:
+    """One line naming the zone, its area, and every member the cut had to drop —
+    or None when the cut was complete.
+
+    This is the diagnostic the Phase 1 brief asked for. It is a WARNING and not
+    an exception on purpose: by the time a cutter degrades, the solve is already
+    OPTIMAL and the rest of the plan is fine, so killing it destroys more
+    information than it preserves. What must not happen is what happened before
+    — a Guest WC quietly vanishing from a shipped plan with nothing said.
+
+    If this ever fires in production it is a SOLVER/SLICER DISAGREEMENT, not a
+    cut to retry: _legal_1 probes these same cutters through _slice_probe and
+    already refuses any zone shape whose cut is incomplete or out of band, so a
+    shape that reaches here should have been unreachable. Read it as "the shape
+    table and the cutter have drifted apart", and fix the table."""
+    members = zone_members(zone_id)
+    if not members:
+        return None
+    got = {r.name for r in emitted}
+    missing = [n for n in members if n not in got]
+    if not missing:
+        return None
+    x0, y0, x1, y1 = zr.rect_m
+    w, h = x1 - x0, y1 - y0
+    need = "; ".join(
+        f"{n} (needs >= {standards.area_floor(n):.2f} m2, <= {standards.area_ceiling(n):.2f} m2, "
+        f"min dims {standards.ROOMS[n].min_w_m} x {standards.ROOMS[n].min_h_m} m)"
+        if n in standards.ROOMS else n
+        for n in missing
+    )
+    return (
+        f"slicer: zone {zone_id!r} at {w:.1f} x {h:.1f} m = {w * h:.2f} m2 could not be cut "
+        f"into all of [{', '.join(members)}] — dropped {need}. It ships "
+        f"{len(emitted)} room(s) instead of {len(members)}. legal_pairs()/_legal_1 is "
+        f"supposed to keep this shape away from the solver, so this is a solver/slicer "
+        f"disagreement rather than a zone that is merely small."
+    )
 
 
 def compute_zone_minima(zone_id: str):
