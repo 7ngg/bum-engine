@@ -61,6 +61,19 @@ COVERAGE_MIN = 1.00
 DEFAULT_MAX_ASPECT = 3.0  # fallback when neither Space nor standards gives one
 TARGET_AREA_TOLERANCE = 0.15  # sum(space targets) vs target_area_m2 mismatch warn
 
+# Minimum shared wall between the Guest WC and the wet core (Kitchen | Laundry).
+# NOT a door width, and deliberately not derived from ACCESS_DOOR_M: the architect
+# ruled out a door between laundry and WC outright ("camasirxana ile tualetin
+# bir-birine qapi ile acilmasina qetiyyen ehtiyac yoxdur"). What has to fit in this
+# wall is the DRAINAGE, which is the whole point of putting the two together (one
+# riser, not two — SNiP 2.08.01-89's Posobie makes the same point for rural
+# houses). A DN100 soil stack boxed into a duct is ~0.3 m of wall, the WC pan's
+# branch reaches it from ~0.35 m along, and the appliance branch on the other side
+# needs its own run: ~0.7 m of shared wet wall before anything can physically
+# connect. The next step up on the 0.5 m grid is 1.0 m, which is also the smallest
+# value no single-cell corner graze can fake. See _force_guest_wc_reaches_wet_core.
+WET_CORE_SHARE_M = 1.0
+
 # Tag prefix generate.py's fallback prepends to SolveResult.warnings (and, via
 # build_layout, Layout.warnings) when it had to drop the kitchen-direct
 # constraint below. validator.py's validate_plan checks for this same prefix
@@ -472,7 +485,7 @@ def _require_master_bedroom_perimeter(
 
 def _force_vertical_cover_center(
     m: cp_model.CpModel, corr: _ZoneVars, zone: _ZoneVars, band_u: int, tag: str
-) -> None:
+) -> dict[str, cp_model.IntVar] | None:
     """Force `corr` (corridor) to share a vertical E/W wall with `zone` (children)
     whose overlap COVERS the zone's central `band_u`-unit slice — the middle
     Bathroom band. children is sliced bed2 / Bathroom / bed3 top-to-bottom with
@@ -482,14 +495,62 @@ def _force_vertical_cover_center(
     sharing a full-width wall with the Bathroom) are then reached THROUGH the
     Bathroom — legal, since the Bathroom is no_through_traffic=False — so no path
     ever transits a bedroom. Root-cause fix for the Task-2a hall-bathroom bug.
-    A 2-unit (x2-written) margin absorbs the slice's half-grid centring drift."""
+    A 2-unit (x2-written) margin absorbs the slice's half-grid centring drift.
+
+    GENERALISED (slicer._CHILD_AXIAL, default OFF). The E/W-only disjunction
+    above is a HARDCODED AXIS, and it is the proven blocker for three separate
+    constraints: the kitchen cannot reach a footprint edge (KP), the entry and
+    kitchen_laundry zones cannot touch AT ALL (so the Guest WC can never rejoin
+    the wet core), and only one (dining side x corridor side) configuration of
+    kitchen_laundry survives (so the Laundry, not the Kitchen, holds the dining
+    face). It is the axis and not a constant inside it: band_u swept 4->3->2->1->0
+    and the centring margin 2->0 are INFEASIBLE at every step.
+
+    With the flag on this becomes a reified FOUR-WAY disjunction, exactly the
+    treatment _force_master_corridor_overlap got in b990700, with per-side cover
+    semantics: on the E/W faces the corridor's shared segment is a Y range and
+    must cover the zone's central Y band (today's rule, unchanged); on the N/S
+    faces it is an X range covering the central X band, which is the Bathroom
+    band once _slice_children_ns has transposed the cut. The winning side is
+    returned so _solve_once can record it on SolveResult.corridor_sides and the
+    slicer can read it instead of assuming -- the same loop 5da1490 closed for
+    master_suite. Returns None with the flag off, so nothing downstream can see
+    a side that the slicer would not have honoured anyway.
+
+    The OFF path below is the original code verbatim, in its original order, so
+    the model handed to CP-SAT is identical constraint-for-constraint."""
+    from . import slicer  # lazy: slicer imports solver (GRID_M, ZoneRect)
+
+    if not slicer._CHILD_AXIAL:
+        cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone: corr.x1 == zone.x0
+        cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone: zone.x1 == corr.x0
+        m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
+        m.Add(zone.x1 == corr.x0).OnlyEnforceIf(cE)
+        m.AddBoolOr([cW, cE])
+        m.Add(2 * corr.y0 <= zone.y0 + zone.y1 - band_u - 2)
+        m.Add(2 * corr.y1 >= zone.y0 + zone.y1 + band_u + 2)
+        return None
+
     cW = m.NewBoolVar(f"{tag}_cW")  # corridor west of zone: corr.x1 == zone.x0
     cE = m.NewBoolVar(f"{tag}_cE")  # corridor east of zone: zone.x1 == corr.x0
+    cN = m.NewBoolVar(f"{tag}_cN")  # corridor north of zone: corr.y0 == zone.y1
+    cS = m.NewBoolVar(f"{tag}_cS")  # corridor south of zone: corr.y1 == zone.y0
     m.Add(corr.x1 == zone.x0).OnlyEnforceIf(cW)
     m.Add(zone.x1 == corr.x0).OnlyEnforceIf(cE)
-    m.AddBoolOr([cW, cE])
-    m.Add(2 * corr.y0 <= zone.y0 + zone.y1 - band_u - 2)
-    m.Add(2 * corr.y1 >= zone.y0 + zone.y1 + band_u + 2)
+    m.Add(corr.y0 == zone.y1).OnlyEnforceIf(cN)
+    m.Add(corr.y1 == zone.y0).OnlyEnforceIf(cS)
+    m.AddBoolOr([cW, cE, cN, cS])
+    # The cover is now PER SIDE. It has to be: an unconditional Y-range cover
+    # would silently forbid every N/S attachment (the corridor would have to
+    # straddle the zone's whole Y centre while lying beyond its Y edge), which is
+    # the four-way disjunction in name only.
+    for bv in (cW, cE):
+        m.Add(2 * corr.y0 <= zone.y0 + zone.y1 - band_u - 2).OnlyEnforceIf(bv)
+        m.Add(2 * corr.y1 >= zone.y0 + zone.y1 + band_u + 2).OnlyEnforceIf(bv)
+    for bv in (cN, cS):
+        m.Add(2 * corr.x0 <= zone.x0 + zone.x1 - band_u - 2).OnlyEnforceIf(bv)
+        m.Add(2 * corr.x1 >= zone.x0 + zone.x1 + band_u + 2).OnlyEnforceIf(bv)
+    return {"W": cW, "E": cE, "N": cN, "S": cS}
 
 
 def _force_corridor_overlaps_kitchen(
@@ -676,6 +737,193 @@ def _force_backbone_reaches_foyer(
         m.AddBoolOr(opts)
 
 
+def _force_kitchen_holds_dining_face(
+    m: cp_model.CpModel,
+    dining_side: dict[str, cp_model.IntVar],
+    corridor_side: dict[str, cp_model.IntVar],
+) -> None:
+    """Room-level KITCHEN<->DINING (KD): the Kitchen, not the Laundry, must hold
+    the dining-facing face of the kitchen_laundry zone.
+
+    zones.REQUIRED_ADJ only binds the kitchen_laundry ZONE to dining. Which
+    sub-room fronts Dining is then decided by _slice_kitchen's `corridor_side`
+    override (slicer.py ~278): when the corridor lands on the SAME axis as the
+    Dining cut but at the OPPOSITE end, `place_side = corridor_side` puts the
+    Kitchen at the corridor end and hands the whole dining face to the LAUNDRY.
+    Measured at target 192, and it is not a corner case -- it was happening on
+    BOTH presets (gW_eN dining W / corridor E; gE_eN dining E / corridor W),
+    giving Laundry<->Dining 4.00 m, Kitchen<->Dining 0.00 m, and the Kitchen 3
+    door-graph hops from Dining against the <= 2 that standards.FUNCTIONAL_PAIRS
+    asks for on its SNiP citation. Same defect class as the entry/Foyer blocker
+    and as K above: a zone-level guarantee that the slice can spend elsewhere.
+
+    The constraint forbids exactly that one configuration -- same axis, opposite
+    ends -- and nothing else. Both dicts are keyed "other zone relative to
+    kitchen_laundry" (dining_side from _tie_cut_axis, corridor_side from
+    _share_wall's side_bools), so the four clauses read straight off. What
+    survives:
+
+      same axis, SAME end -> place_side == side; the Kitchen takes the dining
+          end and is corridor-direct on that same face;
+      orthogonal axes     -> the override does not fire at all, place_side stays
+          `side`, the Kitchen takes the dining end, and
+          _force_corridor_overlaps_kitchen keeps the corridor's segment off the
+          Laundry strip.
+
+    Either way the Kitchen spans the zone's whole dining-facing face, so the
+    zone-level >= REQUIRED_SHARE_M becomes a ROOM-level Kitchen<->Dining wall by
+    construction, and corridor-directness is not traded away for it.
+    """
+    for dv, cv in (("N", "S"), ("S", "N"), ("E", "W"), ("W", "E")):
+        m.AddBoolOr([dining_side[dv].Not(), corridor_side[cv].Not()])
+
+
+def _force_guest_wc_reaches_wet_core(
+    m: cp_model.CpModel,
+    entry: _ZoneVars,
+    kl: _ZoneVars,
+    gside: dict[str, cp_model.IntVar],
+    dside: dict[str, cp_model.IntVar],
+    wc_u: int,
+    min_len: int,
+    tag: str,
+) -> None:
+    """Room-level plumbing hardening (W): the Guest WC must share a real wall
+    with the Kitchen or the Laundry.
+
+    WHY. The architect asked for the WC next to the laundry/wet zone so the
+    house needs ONE drainage riser rather than two, and SNiP 2.08.01-89's
+    Posobie makes the same point for rural houses -- the уборная belongs close
+    to the kitchen, being functionally tied to the bath located there. Phase 1's
+    band adoption repacked the plan and the WC drifted out of the wet core
+    entirely: its shared wall with the Kitchen went 2.50 m -> 0.00 and it
+    touched the Laundry nowhere either, so the two wet groups sat in different
+    corners of the house with nothing connecting them.
+
+    NOT A DOOR. The architect ruled a door between laundry and WC out
+    explicitly ("camasirxana ile tualetin bir-birine qapi ile acilmasina
+    qetiyyen ehtiyac yoxdur"), so `min_len` is NOT ACCESS_DOOR_M and must not be
+    derived from it. It is sized for the riser: a DN100 soil stack boxed in a
+    duct is ~0.3 m of wall, the WC pan's branch reaches it from ~0.35 m away,
+    and the appliance branch on the far side needs its own run -- about 0.7 m
+    of shared wet wall before anything can physically connect. The next grid
+    step above that is 1.0 m (see WET_CORE_SHARE_M), which is also the smallest
+    value that cannot be satisfied by a single-cell corner graze.
+
+    HOW. Two reifications, both off constants, both in the idiom of
+    _force_backbone_reaches_foyer and _force_corridor_overlaps_kitchen:
+
+      1. WHICH ENTRY SUB-ROOM holds the contact. The WC is NOT free to be
+         anywhere in the entry zone, but it is also NOT pinned to one face --
+         and getting this exactly right matters, because _split_off_wc tries
+         TWO axes (`try_axis(along_x) or try_axis(not along_x)`) and the solver
+         cannot know which one will land. Reading both branches out for each of
+         the four garage sides (the Mudroom always takes the garage-side strip,
+         the WC always takes an end of the remainder away from it):
+
+           garage W: preferred = south band of the remainder, fallback = east
+                     band            -> both contain the entry's SE corner
+           garage E: preferred = south band, fallback = west band  -> SW corner
+           garage S: preferred = west band, fallback = north band  -> NW corner
+           garage N: preferred = west band, fallback = south band  -> SW corner
+
+         So what is invariant across the axis fallback is a CORNER, not a face:
+         in every case the WC contains the wc_u x wc_u square at that corner
+         (wc_u is the WC's own ceil-snapped minimum, and both bands are at least
+         that deep -- the searched depth can only be deeper, which only helps;
+         the along-face extent is the remainder's, floored by Foyer.min_w/h).
+         Hence, per garage side, exactly TWO of the four contact faces are
+         usable -- the two that MEET at the WC's corner -- and the shared
+         segment is clipped to the wc_u slab measured from that corner. The
+         other two faces are forbidden outright: one is the Mudroom's own outer
+         wall, the other is reachable only on one of the two slicer axes and so
+         would be a guarantee that holds by luck.
+
+      2. WHICH KITCHEN_LAUNDRY SUB-ROOM receives it. _slice_kitchen cuts that
+         zone along the axis `dside` names, so the two faces PERPENDICULAR to
+         that cut each belong wholly to one sub-room (the dining-end face to the
+         Kitchen, the far face to the Laundry) while the two parallel faces are
+         shared by both and a contact there could straddle the internal boundary
+         and deliver min_len to neither. Restricting the contact to the
+         perpendicular pair is what makes "Kitchen OR Laundry" a guarantee
+         instead of an aggregate: whichever face wins, one room owns all of it.
+
+    Every clause is a one-directional implication on the share's own side bools,
+    so it never forbids geometry -- only forbids USING a config as the wet-core
+    contact.
+
+    `_share_wall`'s side bools name where `a` (entry) sits relative to `b` (kl),
+    so they invert into contact faces of the entry, exactly as in
+    _force_backbone_reaches_foyer:
+      "W" -> kl east of entry  -> contact on the entry's EAST face
+      "E" -> kl west of entry  -> contact on the entry's WEST face
+      "S" -> kl north of entry -> contact on the entry's NORTH face
+      "N" -> kl south of entry -> contact on the entry's SOUTH face
+    """
+    BIG = 10_000
+    sb: dict[str, cp_model.IntVar] = {}
+    sh = _share_wall(m, entry, kl, min_len, tag, sb)
+    m.Add(sh == 1)
+
+    # entry FACE -> the share bool that realises a contact on it (see above).
+    face = {"E": sb["W"], "W": sb["E"], "N": sb["S"], "S": sb["N"]}
+
+    # the four wc_u-deep corner slabs of the entry, intersected with kl: how much
+    # of the contact actually lands on the WC's guaranteed square.
+    def _clip(lo_parts, hi_parts, name) -> cp_model.LinearExpr:
+        lo = m.NewIntVar(-BIG, BIG, f"{tag}_{name}lo")
+        hi = m.NewIntVar(-BIG, BIG, f"{tag}_{name}hi")
+        m.AddMaxEquality(lo, lo_parts)
+        m.AddMinEquality(hi, hi_parts)
+        return hi - lo
+
+    ey0p = m.NewIntVar(-BIG, BIG, f"{tag}_ey0p")
+    m.Add(ey0p == entry.y0 + wc_u)
+    ey1m = m.NewIntVar(-BIG, BIG, f"{tag}_ey1m")
+    m.Add(ey1m == entry.y1 - wc_u)
+    ex0p = m.NewIntVar(-BIG, BIG, f"{tag}_ex0p")
+    m.Add(ex0p == entry.x0 + wc_u)
+    ex1m = m.NewIntVar(-BIG, BIG, f"{tag}_ex1m")
+    m.Add(ex1m == entry.x1 - wc_u)
+
+    slab = {
+        ("y", "S"): _clip([kl.y0, entry.y0], [kl.y1, ey0p], "yS"),
+        ("y", "N"): _clip([kl.y0, ey1m], [kl.y1, entry.y1], "yN"),
+        ("x", "W"): _clip([kl.x0, entry.x0], [kl.x1, ex0p], "xW"),
+        ("x", "E"): _clip([kl.x0, ex1m], [kl.x1, entry.x1], "xE"),
+    }
+
+    # (1) garage side -> the corner the WC is guaranteed to hold. The two faces
+    # meeting there get a min_len floor on their clipped segment; the other two
+    # are excluded.
+    for g, cx, cy in (
+        (gside["W"], "E", "S"),
+        (gside["E"], "W", "S"),
+        (gside["S"], "W", "N"),
+        (gside["N"], "W", "S"),
+    ):
+        for f in ("E", "W"):  # vertical faces: clip along y, at the corner's cy
+            if f == cx:
+                m.Add(slab[("y", cy)] >= min_len).OnlyEnforceIf([face[f], g])
+            else:
+                m.AddBoolOr([face[f].Not(), g.Not()])
+        for f in ("N", "S"):  # horizontal faces: clip along x, at the corner's cx
+            if f == cy:
+                m.Add(slab[("x", cx)] >= min_len).OnlyEnforceIf([face[f], g])
+            else:
+                m.AddBoolOr([face[f].Not(), g.Not()])
+
+    # (2) land the contact on a face PERPENDICULAR to the kitchen_laundry cut, so
+    # one sub-room owns the whole of it. dside names Dining relative to kl, and
+    # the cut axis follows Dining (see _slice_kitchen).
+    for d in ("N", "S"):          # N/S cut -> only kl's north/south faces qualify
+        for s in ("W", "E"):
+            m.AddBoolOr([dside[d].Not(), sb[s].Not()])
+    for d in ("W", "E"):          # W/E cut -> only kl's west/east faces qualify
+        for s in ("S", "N"):
+            m.AddBoolOr([dside[d].Not(), sb[s].Not()])
+
+
 # Test seam (Task 5 Phase 2). Production is always True: children is connected to
 # the corridor by _force_vertical_cover_center, guaranteeing the hall Bathroom is
 # corridor-DIRECT. Set False to fall back to a plain children<->{corridor,entry}
@@ -683,6 +931,14 @@ def _force_backbone_reaches_foyer(
 # without it the gE_eW handedness (entry-west + children-west) becomes feasible
 # but the Bathroom loses its direct corridor wall. See test_children_bathroom_*.
 _CHILD_CENTER_COVER: bool = True
+
+# CB3-generalisation sweep arms, both default OFF and both DEPENDENT on
+# slicer._CHILD_AXIAL: each was proven INFEASIBLE under CB3's hardcoded E/W axis
+# (see their own docstrings for the sweeps), so they exist to measure whether the
+# four-way disjunction is what unblocks them. With these False the model is the
+# dee5a7c model exactly.
+_WET_CORE: bool = False             # _force_guest_wc_reaches_wet_core
+_KITCHEN_DINING_FACE: bool = False  # _force_kitchen_holds_dining_face
 
 _REQUIRED_PAIRS: set[frozenset] = {frozenset(p) for p in Z.REQUIRED_ADJ}
 # The access graph (Task 5 Phase 2) uses only relaxed disjunctions, so no pair is
@@ -983,6 +1239,26 @@ def _solve_once(
             m, zv["entry"], zv["garage"], ns_vars["entry"], "axis_entry_garage"
         )
 
+    # W: the Guest WC rejoins the wet core (Kitchen | Laundry) at ROOM level —
+    # one drainage riser, per the architect and the Posobie. Needs BOTH recorded
+    # cut axes: the garage side locates the WC inside the entry zone, the Dining
+    # side locates the Kitchen/Laundry cut inside kitchen_laundry. See
+    # _force_guest_wc_reaches_wet_core. wc_u is the WC's guaranteed corner square:
+    # the smaller of its two ceil-snapped minima, since _split_off_wc may take
+    # either axis.
+    if (
+        _WET_CORE
+        and "entry" in zv and "kitchen_laundry" in zv
+        and "entry" in cut_axis_bools and "kitchen_laundry" in cut_axis_bools
+    ):
+        wc = standards.ROOMS["Guest WC"]
+        _force_guest_wc_reaches_wet_core(
+            m, zv["entry"], zv["kitchen_laundry"],
+            cut_axis_bools["entry"], cut_axis_bools["kitchen_laundry"],
+            min(_ceil_u(wc.min_w_m), _ceil_u(wc.min_h_m)),
+            _ceil_u(WET_CORE_SHARE_M), "wet_core",
+        )
+
     # forbidden adjacency (hard). Program-controlled: program.adjacency.avoid,
     # defaulting to zones.DEFAULT_AVOID when the caller left it empty.
     for pair in avoid_pairs:
@@ -1115,7 +1391,20 @@ def _solve_once(
             # central Bathroom band so the hall Bathroom is corridor-DIRECT (beds
             # reach through it). This also connects children to the backbone.
             bath_u = _ceil_u(standards.ROOMS["Bathroom"].min_h_m)
-            _force_vertical_cover_center(m, zv[circ], zv["children"], bath_u, "acc_child")
+            child_bools = _force_vertical_cover_center(
+                m, zv[circ], zv["children"], bath_u, "acc_child"
+            )
+            if child_bools is not None:
+                # Four-way arm only. Record the winning side so slice_zones can
+                # transpose the cut (the 5da1490 loop, now closed for children
+                # too), and BIND THE SHAPE TABLE TO IT: children's legal (w, h)
+                # table is the union of the two band directions once it is axial,
+                # so the ns bit and the corridor side must agree or the solver
+                # could pick a shape legal only for the cut the slicer will not
+                # perform. ns == 1 is the N/S corridor, matching slicer._NS_REP.
+                corridor_side_bools["children"] = child_bools
+                if "children" in ns_vars:
+                    m.AddMaxEquality(ns_vars["children"], [child_bools["N"], child_bools["S"]])
         elif "children" in zv:  # diagnostic path: plain disjunction, no Bathroom-direct guarantee
             _attach("children", [circ, "entry"], "acc_child")
         _attach("office", [circ, "entry", "living"], "acc_office")
@@ -1150,6 +1439,10 @@ def _solve_once(
                     cut_axis_bools["kitchen_laundry"], kl_corridor_bools,
                     l_ns, l_we, door_u, "acc_kitchen_room",
                 )
+                if _KITCHEN_DINING_FACE:
+                    _force_kitchen_holds_dining_face(
+                        m, cut_axis_bools["kitchen_laundry"], kl_corridor_bools,
+                    )
 
     # --- objective (scaled by plot_cells to keep integer coefficients) --------
     # human objective = 12*coverage_pct + 40*desirable_met + 15*semi_met

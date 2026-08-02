@@ -196,7 +196,19 @@ def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRo
     return [FinalRoom("Master Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
 
-def _slice_children(r: ZoneRect) -> list[FinalRoom]:
+def _slice_children(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRoom]:
+    """Cut children into Bedroom 2 | Bathroom | Bedroom 3, banded ACROSS the face
+    the corridor attached to.
+
+    `corridor_side` is the solver's SolveResult.corridor_sides["children"] --
+    which side of the zone the corridor took -- and it exists for exactly the
+    reason _slice_master's does (5da1490): the band direction is only correct
+    relative to the corridor, and until now it was correct by hard-coding rather
+    than by knowing. "W"/"E"/None keep the historical horizontal bands
+    byte-for-byte; "N"/"S" take the transposed branch below.
+    """
+    if corridor_side in ("N", "S"):
+        return _slice_children_ns(r)
     x0, y0, x1, y1 = r.rect_m
     w, h = x1 - x0, y1 - y0
     bathroom = standards.ROOMS["Bathroom"]
@@ -243,6 +255,70 @@ def _slice_children(r: ZoneRect) -> list[FinalRoom]:
                     FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, x1, a)),
                     FinalRoom("Bathroom", "wet", r.zone, (x0, a, x1, b)),
                     FinalRoom("Bedroom 3", "private", r.zone, (x0, b, x1, y1)),
+                ]
+    return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
+
+
+def _slice_children_ns(r: ZoneRect) -> list[FinalRoom]:
+    """The TRANSPOSE of _slice_children, for a corridor on the zone's N or S face.
+
+    Same logic with x and y exchanged: three full-DEPTH vertical bands, left to
+    right, Bedroom 2 | Bathroom | Bedroom 3. Every band runs the whole depth of
+    the zone, so every band touches the corridor's horizontal face over its own
+    full width -- which is what preserves CB3's three guarantees on this axis:
+    the Bathroom is corridor-DIRECT, and Bedroom 2 and Bedroom 3 each front the
+    corridor themselves rather than being reached through it.
+
+    The 96,580-tiling enumeration that forced full-width bands on the E/W axis
+    transposes with the geometry, not against it: its premise was "all three
+    rooms need a wall on the corridor's face", and rotating which face that is
+    rotates the surviving topology with it. It does not admit new topologies --
+    a narrow Bathroom still needs a 4th room or an L-shaped bedroom here too.
+
+    ONE thing does NOT simply transpose, and it is the reason this is a separate
+    function rather than an axis flag threaded through the original: the Bathroom
+    standard is ORIENTED (standards.py: min_w_m 2.4 is ALONG the fixture run,
+    min_h_m 1.7 is the depth in front of it). Rotating the room 90 degrees
+    rotates the fixture run with it -- the bath and basin now run along the
+    zone's DEPTH and the activity space is measured across the band's width. So
+    the Bathroom is checked against a transposed rect: the room is the same room,
+    installed the other way round, and pretending otherwise would either reject
+    every legal vertical bathroom (2.4 demanded across a band that only needs
+    1.7) or, worse, accept an illegal one. The beds need no such care -- the
+    Bedroom envelope is square (2.44 x 2.44).
+    """
+    x0, y0, x1, y1 = r.rect_m
+    w, h = x1 - x0, y1 - y0
+    bathroom = standards.ROOMS["Bathroom"]
+    bed = standards.ROOMS["Bedroom"]
+
+    def bath_ok(rect: geom.Rect) -> bool:
+        # transposed check: swap the rect's own w/h before measuring it against
+        # the oriented standard (see the docstring).
+        bx0, by0, bx1, by1 = rect
+        return _in_band("Bathroom", (0.0, 0.0, by1 - by0, bx1 - bx0))
+
+    # The Bathroom's band WIDTH is its depth-in-front (min_h_m), because its
+    # fixture run lies along the zone's depth here -- the mirror of the E/W
+    # branch, where the band's depth was min_h_m and the run lay along the width.
+    for bath_w in _grid_steps(bathroom.min_h_m, w - 2 * _ceil_snap(bed.min_w_m)):
+        rest = w - bath_w
+        mid = _snap(rest / 2)
+        cands = sorted(
+            _grid_steps(bed.min_w_m, rest - _ceil_snap(bed.min_w_m)),
+            key=lambda t: (abs(t - mid), t),
+        )
+        for left in cands:
+            a, b = x0 + left, x0 + left + bath_w
+            if (
+                _in_band("Bedroom 2", (x0, y0, a, y1))
+                and bath_ok((a, y0, b, y1))
+                and _in_band("Bedroom 3", (b, y0, x1, y1))
+            ):
+                return [
+                    FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, a, y1)),
+                    FinalRoom("Bathroom", "wet", r.zone, (a, y0, b, y1)),
+                    FinalRoom("Bedroom 3", "private", r.zone, (b, y0, x1, y1)),
                 ]
     return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
@@ -500,6 +576,10 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
     corridor_sides = getattr(result, "corridor_sides", {}) or {}
     master_corridor_side = corridor_sides.get("master_suite")
     kl_corridor_side = corridor_sides.get("kitchen_laundry")
+    # children's corridor side is only recorded when the four-way disjunction is
+    # on (see solver._force_vertical_cover_center); None otherwise, which is the
+    # historical horizontal cut.
+    child_corridor_side = corridor_sides.get("children")
     degraded: list[str] = []
     rooms: list[FinalRoom] = []
     for zr in result.rects:
@@ -508,7 +588,7 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
             if z == "master_suite":
                 cut = _slice_master(zr, master_corridor_side)
             elif z == "children":
-                cut = _slice_children(zr)
+                cut = _slice_children(zr, child_corridor_side)
             elif z == "kitchen_laundry":
                 cut = _slice_kitchen(zr, kl_side, kl_corridor_side)
             else:
@@ -581,6 +661,23 @@ _COMPOSITE = {"master_suite", "children", "kitchen_laundry", "entry"}
 # makes the band adoptable at all.
 _AXIAL = {"kitchen_laundry", "entry"}
 
+# CB3 GENERALISATION, default OFF. When True, `children` joins _AXIAL: its shape
+# table becomes the union of the two band directions plus a solver cut-axis bit,
+# solver._force_vertical_cover_center offers the corridor all FOUR faces instead
+# of only E/W, and _slice_children reads the winning side and transposes.
+#
+# Why it is a flag and not just the new behaviour: CB3's E/W-only axis is the
+# proven blocker for three separate constraints (kitchen daylight, the Guest WC
+# wet core, room-level Kitchen<->Dining), so the change has to be measurable
+# against the exact pre-change packing. With this False, every path below is the
+# historical one byte-for-byte -- children stays out of _AXIAL, keeps its
+# single-orientation table, and never receives a corridor_side.
+_CHILD_AXIAL: bool = False
+
+
+def _is_axial(zone_id: str) -> bool:
+    return zone_id in _AXIAL or (zone_id == "children" and _CHILD_AXIAL)
+
 # non-composite zone -> its single room standard (envelope = that room).
 _ZONE_ROOM = {
     "living": "Living",
@@ -614,7 +711,12 @@ def _slice_probe(zone_id: str, w: float, h: float, side: str | None) -> list[Fin
     if zone_id == "master_suite":
         return _slice_master(zr)
     if zone_id == "children":
-        return _slice_children(zr)
+        # `side` is the CORRIDOR's side here (the analogue of the director side
+        # kitchen_laundry/entry key off), so the probe must pass it once children
+        # is axial -- otherwise the N/S band direction is never probed and its
+        # half of the union table comes back empty. With the flag off, children
+        # ignores `side` exactly as before.
+        return _slice_children(zr, side if _CHILD_AXIAL else None)
     if zone_id == "kitchen_laundry":
         return _slice_kitchen(zr, side)
     if zone_id == "entry":
@@ -656,7 +758,7 @@ def legal_pairs(zone_id: str):
     if zone_id not in _COMPOSITE:
         _PAIRS_CACHE[zone_id] = None
         return None
-    if zone_id in _AXIAL:
+    if _is_axial(zone_id):
         pairs: list = []
         for wu in _STEPS:
             for hu in _STEPS:
