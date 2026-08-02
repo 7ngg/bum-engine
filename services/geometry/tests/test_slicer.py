@@ -20,6 +20,27 @@ def _rects(rooms):
     return {r.name: r.rect for r in rooms}
 
 
+# PROBE SIZE, moved 6.0 x 6.0 -> 5.0 x 5.0 in PHASE 1 (architect area bands).
+# _slice_kitchen is now AREA-AWARE: it only emits two rooms if BOTH land inside
+# their architect bands (Kitchen 10-22 m2, Laundry 4-10 m2), so a probe zone must
+# have an area the two bands can actually cover -- at most 32 m2, and shaped so
+# each room clears its own minimum. 6.0 x 6.0 = 36 m2 exceeds that, every
+# candidate cut is rejected, and _slice_kitchen falls through to its
+# single-Kitchen return. That is what produced the KeyError 'Laundry'.
+#
+# 5.0 x 5.0 = 25 m2 is the nearest square that still cuts (verified across a
+# 3.0-12.0 m sweep on both axes: 35 sizes cut, and this is the closest to the
+# original). It is used by ALL FOUR probes in this file, not just the one that
+# was failing: the other three compare _slice_kitchen's output with and without a
+# corridor_side, and at 6.0 x 6.0 they were comparing [Kitchen] against [Kitchen]
+# -- trivially equal, and no longer testing the override at all. Same one-line
+# fixture cause, so they are corrected here too rather than left silently vacuous.
+# Verified at 5.0 x 5.0: ("W") and ("W","E") both yield Kitchen+Laundry with the
+# override flipping which end each takes; ("S") and ("S","W") yield Kitchen+Laundry
+# byte-identical, which is the orthogonal-axis property that test asserts.
+_PROBE = (5.0, 5.0)
+
+
 def test_slice_master_corridor_side_north_flips_service_south():
     zr = ZoneRect("master_suite", 0.0, 0.0, 6.0, 6.0)
     rooms = _rects(_slice_master(zr, "N"))
@@ -45,15 +66,15 @@ def test_slice_kitchen_corridor_side_same_axis_overrides_dining_side():
     # Cut axis is W/E (dining west of the zone -> today's default places
     # Kitchen west, Laundry east). corridor_side="E" is on the SAME (W/E)
     # axis but disagrees with the dining side -- corridor must win.
-    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, 6.0, 6.0)
+    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, *_PROBE)
 
     default_rooms = _rects(_slice_kitchen(zr, "W"))
     assert default_rooms["Kitchen"][0] == 0.0, "sanity: Kitchen is the WEST room by default"
-    assert default_rooms["Laundry"][2] == 6.0, "sanity: Laundry is the EAST room by default"
+    assert default_rooms["Laundry"][2] == _PROBE[0], "sanity: Laundry is the EAST room by default"
 
     rooms = _rects(_slice_kitchen(zr, "W", "E"))
     kitchen, laundry = rooms["Kitchen"], rooms["Laundry"]
-    assert kitchen[2] == 6.0, "corridor wins: Kitchen must front the EAST edge"
+    assert kitchen[2] == _PROBE[0], "corridor wins: Kitchen must front the EAST edge"
     assert laundry[0] == 0.0, "Laundry pushed to the WEST edge"
     assert geom.overlap_area(kitchen, laundry) == 0.0
     assert geom.adjacent(kitchen, laundry, 0.1)
@@ -64,14 +85,20 @@ def test_slice_kitchen_corridor_side_orthogonal_axis_unchanged():
     # "W" is on the ORTHOGONAL axis: under an N/S cut both sub-rooms already
     # span the full width, so reordering can't target one specifically over
     # the other -- the dining placement must pass through byte-identical.
-    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, 6.0, 6.0)
+    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, *_PROBE)
     without = [(r.name, r.rect) for r in _slice_kitchen(zr, "S")]
     with_corridor = [(r.name, r.rect) for r in _slice_kitchen(zr, "S", "W")]
+    assert {n for n, _ in without} == {"Kitchen", "Laundry"}, (
+        "probe must actually cut, or this comparison is vacuous (see _PROBE)"
+    )
     assert without == with_corridor
 
 
 def test_slice_kitchen_corridor_side_none_unchanged():
-    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, 6.0, 6.0)
+    zr = ZoneRect("kitchen_laundry", 0.0, 0.0, *_PROBE)
     without = [(r.name, r.rect) for r in _slice_kitchen(zr, "W")]
     with_none = [(r.name, r.rect) for r in _slice_kitchen(zr, "W", None)]
+    assert {n for n, _ in without} == {"Kitchen", "Laundry"}, (
+        "probe must actually cut, or this comparison is vacuous (see _PROBE)"
+    )
     assert without == with_none

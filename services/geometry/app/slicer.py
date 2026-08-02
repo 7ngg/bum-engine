@@ -209,11 +209,20 @@ def _slice_children(r: ZoneRect) -> list[FinalRoom]:
     # bathroom depth AND the bed divider are now searched on the grid.
     #
     # The Bathroom is the room with a real CEILING here (9 m2) and it spans the
-    # full zone width, so on a wide zone its minimum depth can already exceed its
-    # maximum area — 4.0 m wide x 2.5 m minimum depth = 10.0 > 9. That is a
-    # genuine grid/band contradiction, not something to round away: this function
-    # returns no 3-way cut for such a shape, and because legal_pairs() probes it,
-    # the solver is never offered that zone width. See the Phase 1 report.
+    # full zone width, so on a wide zone its minimum DEPTH times that width can
+    # exceed its maximum area outright. That is a real contradiction and this
+    # function does not round it away: it returns no 3-way cut for such a shape,
+    # and because legal_pairs() probes it, the solver is never offered that zone
+    # width at all.
+    #
+    # The full width is FORCED, not chosen — with the corridor strictly E/W of
+    # this zone (CB3), the only 3-rectangle tilings that give all three rooms a
+    # wall on that face are three full-width bands; a narrow Bathroom needs a
+    # 4th room or an L-shaped bedroom. Proof and counts in standards.py's
+    # ARCHITECT_AREA_BANDS note. So the depth is the only lever, and it is the
+    # Bathroom's own min_h_m — which is why that number is now sourced rather
+    # than derived. At 1.7 -> 2.0 m snapped, widths up to 4.0 m clear the 9 m2
+    # ceiling (4.0 x 2.0 = 8.0) and the aspect cap binds before the band does.
     for bath_h in _grid_steps(bathroom.min_h_m, h - 2 * _ceil_snap(bed.min_h_m)):
         rest = h - bath_h
         # Prefer the most even split (the two beds share a minimum), then walk

@@ -68,7 +68,31 @@ GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 # The objective got WORSE by design: exact tiling is bought with footprint and
 # area-adherence, and neither is free. Nothing here is unexplained by the
 # repacking.
-EXPECTED_OBJECTIVE = -97.5625
+#
+# EXPECTED_OBJECTIVE moved -97.5625 -> 534.65625 in Phase 1 (architect area
+# bands). THE TWO NUMBERS ARE NOT COMPARABLE, and no term-delta table is given
+# for this move for one specific reason: **Phase 1 DELETED the adherence (ADHERE)
+# L1 term entirely**. It carried 58% of the penalty mass and it was penalising a
+# zone for obeying a hard constraint -- once the architect's per-room-type bands
+# became hard constraints, paying an L1 penalty for sitting inside your own band
+# was double-charging. Every prior baseline in this file (288.0, -97.5625, and
+# the -296.8750 adhere delta above) was computed WITH that term, so subtracting
+# them from 534.65625 measures nothing. The new value is verified by
+# reconstructing every SURVIVING term from the solved rects and reproducing the
+# solver's own objective to the digit (roomy, gW_eN, seed 1, workers=1,
+# time_limit_s=12 -- the exact call this test makes), plot_cells = 1920:
+#     coverage fill      12*100*total_area      967200    +503.7500 /cell
+#     footprint dev      -3*PC*fp_dev          -218880    -114.0000 /cell
+#     desirable adj      PC*40*n (2 met)        153600     +80.0000 /cell
+#     semi adj           PC*15*n (0 met)             0      +0.0000 /cell
+#     public non-south   -PC*3*n                 -5760      -3.0000 /cell
+#     service northness  PC*2*sum(dy)           130560     +68.0000 /cell
+#     soft brief minima  -60*shortfall            -180      -0.0938 /cell
+#     ----------------------------------------------------------------
+#     SUM                                      1026540    +534.6562 /cell
+# which is the solver's reported 534.65625. Footprint 208.00 -> 201.50 m2, void
+# 0.00, coverage 1.0000, all 16 rooms inside their architect bands.
+EXPECTED_OBJECTIVE = 534.65625
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",
@@ -153,7 +177,12 @@ def test_golden_invariants_portable(roomy_program):
         "at 184, where before b990700 it wasn't. REQUIRED_ADJ is zone-level "
         "only, so validate() can't see it. Not fixed; see b990700's commit "
         "message and tests/test_validator.py's "
-        "test_kitchen_dining_room_level_KNOWN_REGRESSION for the same fact."
+        "test_kitchen_dining_room_level_KNOWN_REGRESSION for the same fact. "
+        "PHASE 1: the root cause named above is superseded. It is not that the "
+        "repacking happened to create the corridor/dining conflict -- that "
+        "conflict is the only configuration the model can pack at all. See "
+        "test_validator.py::test_kitchen_dining_two_hops_KNOWN_DEFECT for the "
+        "16-config enumeration and the blocker."
     ),
 )
 def test_golden_kitchen_dining_room_level_KNOWN_REGRESSION(roomy_program):

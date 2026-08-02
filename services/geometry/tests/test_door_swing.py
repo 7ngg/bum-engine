@@ -144,6 +144,24 @@ def test_no_door_opens_into_circulation(roomy_program, preset):
         )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "CANNOT REACH ITS SUBJECT since Phase 1 (architect area bands): the "
+        "fixture no longer contains a single circulation<->circulation door on "
+        "either preset, so there is nothing for R2 to arbitrate and the test "
+        "fails on its own final guard ('fixture no longer has a "
+        "circulation<->circulation door'). Measured on this commit: the list of "
+        "doors with both endpoints in the circ category is EMPTY for gW_eN and "
+        "for gE_eN. The rule itself is untouched -- _choose_facing still "
+        "implements R2, and its unit-level coverage below "
+        "(test_choose_facing_r2_*) exercises the tie-break directly on "
+        "synthesised geometry, which is why R2 is not left unverified by this "
+        "xfail. Kept rather than deleted because the packing moves: as soon as a "
+        "layout produces a circ<->circ door again this must go back to a normal "
+        "assertion. Strict, so that moment is not missed."
+    ),
+)
 @pytest.mark.parametrize("preset", PRESETS)
 def test_both_circulation_door_opens_into_the_wider_side(roomy_program, preset):
     """R2: where both sides are circulation the leaf goes to whichever space can

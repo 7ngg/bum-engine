@@ -58,28 +58,30 @@ ARCHITECT_AREA_BANDS: dict[str, tuple[float, float]] = {
     "Walk-in Closet": (4, 12),
     "Bedroom 2": (12, 20),
     "Bedroom 3": (12, 20),
-    # BATHROOM: HIS NUMBER, VERBATIM -- and it is currently INFEASIBLE. Read this
-    # before touching it; the temptation to "just raise it" is the whole point.
+    # BATHROOM: HIS NUMBER, VERBATIM -- and it stands. It was briefly blamed for
+    # an infeasibility that turned out to be OUR envelope, so read this before
+    # touching it; the temptation to "just raise it" is the whole point.
     #
-    # _slice_children puts the Bathroom in the middle band, spanning the children
-    # zone's full WIDTH, and its minimum depth ceil-snaps to 2.5 m on
-    # GRID_M = 0.5. So the zone width is capped at 9 / 2.5 = 3.6 -> 3.5 m on the
-    # grid, and the next realisable bathroom is 4.0 x 2.5 = 10.0 m2 exactly.
-    # There is nothing between 8.75 and 10.0 to choose.
+    # _slice_children puts the Bathroom in the middle band spanning the children
+    # zone's full WIDTH -- and that is FORCED, not a style choice. Brute force
+    # over all 96580 partitions of a rectangle into three rectangles: exactly
+    # 16320 give all three rooms a wall on one shared vertical face (what CB3 /
+    # _force_vertical_cover_center needs, since the corridor must lie strictly E
+    # or W of the zone), and ALL 16320 are three full-width horizontal bands.
+    # There is no 3-room cut with a narrow Bathroom. So the zone width times the
+    # Bathroom's minimum DEPTH is what has to fit under this 9 m2 ceiling.
     #
-    # Measured consequence: with every other band as he wrote it, exact tiling
-    # (COVERAGE_MIN = 1.00) is INFEASIBLE at EVERY footprint target from 184 to
-    # 220 on both presets -- the children zone is confined to a 2.5-3.5 m wide
-    # strip and the zones can no longer tile a rectangle. Raising ONLY this
-    # ceiling to 10.0 restores OPTIMAL at 208.0 m2. Raising it to 9.5 does NOT
-    # help, which is the proof that this is quantisation and not slack.
+    # That depth used to ceil-snap to 2.5 m, capping the zone at 9/2.5 = 3.6 ->
+    # 3.5 m and making 8.75 / 10.00 the only realisable areas -- with nothing in
+    # between, exact tiling (COVERAGE_MIN = 1.00) was INFEASIBLE at every target
+    # 184-220 on both presets. The 2.5 came from a min_h_m of 2.2 that the
+    # Bathroom RoomStandard itself flagged as "not separately sourced". Sourcing
+    # it properly (the fixture run: 1.7 m deep, see the RoomStandard below) drops
+    # the snap to 2.0, admits a 4.0 m wide zone, and both presets solve with the
+    # Bathroom at 4.0 x 2.0 = 8.00 m2 -- inside his band, with headroom.
     #
-    # A 10.0 override was written here and then REVERTED: only the Garage
-    # override was authorised, and changing his numbers is his ruling to make,
-    # not ours. This is a QUESTION FOR HIM, alongside the Garage two-car row --
-    # "your 9 m2 hall-bathroom ceiling is unreachable on our 0.5 m planning grid;
-    # is 10 acceptable, or should the grid change?" Until he answers, his number
-    # stands and the plan does not solve.
+    # A 10.0 override was written here and then REVERTED. Changing his numbers is
+    # his ruling to make, and it turned out we never needed it.
     "Bathroom": (4, 9),
     "Guest WC": (1.5, 3.5),
     "Office": (10, 20),
@@ -212,10 +214,26 @@ ROOMS: dict[str, RoomStandard] = {
     "Bedroom 3": _BEDROOM,
     "Children Bedroom": _BEDROOM,
     "Bathroom": RoomStandard(
-        # DERIVED (not in Neufert): 1700 bath + activity space; cf. Neufert
-        # prefab bathroom unit 2875x2110mm. min_h_m not separately sourced.
-        # min_area raised to min_w*min_h (2.1*2.2=4.62).
-        min_w_m=2.1, min_h_m=2.2, min_area_m2=4.62, max_aspect=2.0,
+        # ORIENTED, and deliberately so: min_w_m is ALONG the fixture run and
+        # min_h_m is the depth in front of it. _slice_children is the only
+        # producer of a "Bathroom" and it always lays the room out that way -- a
+        # full-width middle band, shallow in y -- so the two are not
+        # interchangeable here the way a near-square envelope let them be.
+        #
+        # Neufert's fixture run: bath 1500x700 end to end, basin >= 550x420
+        # beside it, so the run wants ~2.4 m of wall. Depth is the 700 bath plus
+        # ~1000 of activity space in front of it = 1.7 m. cf. the Neufert prefab
+        # bathroom unit at 2875x2110.
+        #
+        # WAS 2.1 x 2.2 with min_area 4.62, carrying the note "min_h_m not
+        # separately sourced" -- and that unsourced 2.2 was the whole problem.
+        # It ceil-snapped the band depth to 2.5 m, which multiplied by the zone
+        # width blew through the architect's 9 m2 ceiling at any width >= 4.0 m
+        # and made the entire plan INFEASIBLE (see ARCHITECT_AREA_BANDS above).
+        # 1.7 snaps to 2.0 and the contradiction disappears. max_aspect 2.0 is
+        # what now caps the zone at 4.0 m wide (4.0 x 2.0 is exactly 2.0), so the
+        # ceiling is no longer the binding constraint on either side.
+        min_w_m=2.4, min_h_m=1.7, min_area_m2=4.08, max_aspect=2.0,
         # GUESS: family bathrooms are commonly internal/mechanically vented.
         requires_exterior_wall=False,
         # Hall bathroom, NOT Jack-and-Jill: _slice_children places it BETWEEN

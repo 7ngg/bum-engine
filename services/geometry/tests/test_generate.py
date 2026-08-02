@@ -76,7 +76,12 @@ def test_dod_adjacencies(roomy_program):
         "at 184, where before b990700 it wasn't. REQUIRED_ADJ is zone-level "
         "only, so validate() can't see it. Not fixed; see b990700's commit "
         "message and tests/test_validator.py's "
-        "test_kitchen_dining_room_level_KNOWN_REGRESSION for the same fact."
+        "test_kitchen_dining_room_level_KNOWN_REGRESSION for the same fact. "
+        "PHASE 1: the root cause named above is superseded. The corridor/dining "
+        "conflict is not something a repacking happened to create -- it is the "
+        "only configuration the model can pack at all. See "
+        "test_validator.py::test_kitchen_dining_two_hops_KNOWN_DEFECT for the "
+        "16-config enumeration and the blocker."
     ),
 )
 def test_dod_kitchen_dining_adjacency_KNOWN_REGRESSION(roomy_program):

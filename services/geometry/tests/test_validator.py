@@ -251,33 +251,26 @@ def test_kitchen_direct_to_corridor(program, preset):
     assert validate_plan(layout, program) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "NEGATIVE CONTROL that lost its power (9edf61a, exact tiling). This test "
-        "disables the kitchen-direct constraint and asserts the through-living "
-        "pathology reappears, which is how it proved the constraint is what "
-        "delivers kitchen-direct rather than a coincidence of the 184 m2 "
-        "geometry. Under exact tiling (COVERAGE_MIN 1.00, AREA_HI 1.50) the "
-        "UNCONSTRAINED solve at 184 no longer exhibits the pathology at all -- it "
-        "routes Kitchen via Dining -> Corridor -> Foyer, never through Living -- "
-        "so the control can no longer demonstrate load-bearingness at this "
-        "fixture. THE GUARANTEE IS INTACT: the positive test "
-        "test_kitchen_direct_to_corridor still passes on BOTH presets, so the "
-        "constraint is still enforced and still delivers a real Kitchen<->Corridor "
-        "wall. It is the control that lost its power, not the guarantee. Strict, "
-        "so if this ever passes again -- a repacking that reintroduces the "
-        "through-living route when unconstrained -- that is the signal to revisit "
-        "and un-xfail it."
-    ),
-)
 @pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
 def test_kitchen_direct_constraint_is_load_bearing(program, preset):
-    # Proves the constraint (not a coincidence of the 184 m2 geometry) is what
+    # Proves the constraint (not a coincidence of the fixture geometry) is what
     # delivers kitchen-direct: with it OFF, UNFLAGGED (no disclosure -- unlike
     # generate.py's fallback, which always appends KITCHEN_FALLBACK_TAG), the
     # plan reverts to the Dining->Living chain and the gate must reject it.
     # Stops a silent revert of the constraint later.
+    #
+    # UN-XFAILED IN PHASE 1. This was a strict xfail from 9edf61a (exact tiling):
+    # under COVERAGE_MIN 1.00 / AREA_HI 1.50 the UNCONSTRAINED solve stopped
+    # exhibiting the pathology at all, so the negative control could no longer
+    # demonstrate anything, and the xfail's own reason named "if this ever passes
+    # again" as the signal to revisit. It passes again. The architect area bands
+    # repacked the plan and the unconstrained solve routes through Living once
+    # more, on BOTH presets -- measured, not assumed:
+    #     gW_eN  kitchen ancestors ['Dining', 'Living', 'Corridor', 'Mudroom', 'Foyer']
+    #     gE_eN  kitchen ancestors ['Dining', 'Living', 'Corridor', 'Mudroom', 'Foyer']
+    #     both   validate_plan -> "Kitchen is reached via Living"
+    # So the control has its power back and this is a normal passing assertion
+    # again. Nothing about the assertion itself was changed.
     r = solve(program, preset, seed=1, time_limit_s=12, workers=1, force_kitchen_direct=False)
     assert r.feasible, "dropping kitchen-direct should still solve on roomy"
     assert not r.kitchen_direct
@@ -295,10 +288,26 @@ def test_kitchen_direct_constraint_is_load_bearing(program, preset):
 def test_kitchen_direct_fallback_flags_area_limitation(program):
     # A footprint too small for kitchen-direct must not ship a flawed plan
     # SILENTLY: generate.py retries without the constraint and flags the
-    # result. Uses 160 m2 (roomy's old target, proven infeasible for
-    # kitchen-direct by two independent sweeps), not the `program` fixture
-    # (now 184 m2, where kitchen-direct is feasible and no fallback fires).
-    small = program.model_copy(update={"footprint_target_m2": 160.0})
+    # result.
+    #
+    # FIXTURE MOVED 160 -> 168 IN PHASE 1, and the path is still genuinely
+    # exercised -- this is NOT a test that was quietly retired. The architect
+    # area bands raised the packing floor, so 160 m2 is now below it and
+    # generate() returns ZERO variants there; the test would have failed on its
+    # first assertion, which asserts the fallback still delivers a plan. A
+    # footprint sweep found where the window actually is now (roomy, seeds [1],
+    # n=2, both presets):
+    #     160  variants 0                          <- below the packing floor
+    #     168  variants 2, both fallback-tagged, both validate().ok  <- USED HERE
+    #     172  variants 2, both fallback-tagged, both validate().ok
+    #     176  variants 2, none tagged             <- kitchen-direct feasible again
+    #     180  variants 2, none tagged
+    #     184  variants 2, none tagged
+    # 168 is the low end of the two-cell window, chosen for the same reason 160
+    # originally was: as far from the kitchen-direct-feasible region as the
+    # fixture can go while still producing a plan at all. Not the `program`
+    # fixture (192 m2, where kitchen-direct is feasible and no fallback fires).
+    small = program.model_copy(update={"footprint_target_m2": 168.0})
     g = generate(small, n=2, seeds=[1])
     assert len(g.variants) >= 1, "the fallback must still deliver a plan, not nothing"
     for v in g.variants:
@@ -560,14 +569,22 @@ def test_master_bedroom_still_has_window_after_window_truth_fix(program, preset)
 # regression is VISIBLE in the suite, not silently absent. If this
 # unexpectedly passes, strict xfail turns that into a failure -- report it
 # immediately, it would mean the regression did not materialise here.
+#
+# PHASE 1 UPDATE -- the root cause above is now PROVEN, and it is not the one
+# this comment originally named. It is not that b990700's repacking happened to
+# put the corridor and dining sides into conflict "at 184, where before it
+# wasn't". The conflict is the ONLY thing the model can pack. See the
+# enumeration in test_kitchen_dining_two_hops_KNOWN_DEFECT below.
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "KNOWN REGRESSION (master-bedroom-window fix): Kitchen<->Dining no "
-        "longer share a wall at the room level on the roomy 184 m2 fixture -- "
-        "Laundry sits between them. REQUIRED_ADJ is zone-level only so "
-        "validate() doesn't catch it. Not fixed by this commit; see its "
-        "message for the measured gap."
+        "KNOWN REGRESSION, root cause now proven in Phase 1: Kitchen<->Dining do "
+        "not share a wall at the room level -- the Laundry holds the whole "
+        "dining-facing face. Measured on this commit, both presets: "
+        "Kitchen<->Dining 0.00 m, Laundry<->Dining 4.00 m. REQUIRED_ADJ is "
+        "zone-level only so validate() doesn't catch it. Forcing it is INFEASIBLE "
+        "-- see test_kitchen_dining_two_hops_KNOWN_DEFECT for the 16-config "
+        "enumeration and the blocker."
     ),
 )
 @pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
@@ -578,4 +595,66 @@ def test_kitchen_dining_room_level_KNOWN_REGRESSION(program, preset):
     rooms = {rm.name: tuple(rm.rect_m) for rm in layout.rooms}
     assert geom.adjacent(rooms["Kitchen"], rooms["Dining"], ACCESS_DOOR_M), (
         "Kitchen must share a real wall with Dining at the room level"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN DEFECT with a proof, recorded so the cost of the current model is "
+        "in the suite rather than in a commit message. slicer.FUNCTIONAL_PAIRS "
+        "asks, on its SNiP 2.08.01-89 Posobie citation, for the Kitchen to be "
+        "within 2 door-graph hops of the Dining room, and the secondary-door "
+        "selector could find no candidate door that closes the gap. It is 3 on "
+        "both presets: the access path is "
+        "Kitchen -> Corridor -> Mudroom -> Foyer while Dining goes "
+        "Dining -> Living -> Corridor -> ..., so they only meet at the Corridor. "
+        "WHY IT IS NOT SIMPLY FIXED. The direct cause is slicer._slice_kitchen's "
+        "corridor_side override: when the corridor lands on the SAME axis as the "
+        "Dining cut but the OPPOSITE end, it puts the Kitchen at the corridor end "
+        "and hands the entire dining-facing face to the Laundry. Constraining the "
+        "solver away from that configuration is INFEASIBLE. Enumerated at "
+        "footprint 192, seed 1, workers=1, avoid HELD, by pinning each of the 16 "
+        "(dining side x corridor side) combinations of kitchen_laundry in turn: "
+        "EXACTLY ONE is feasible per preset -- gW_eN dining W / corridor E, and "
+        "gE_eN dining E / corridor W, both OPTIMAL at objective 534.65625 -- and "
+        "that single survivor IS the same-axis-opposite-ends case that yields "
+        "Kitchen<->Dining 0.00 m. The other 15 are PROVEN INFEASIBLE on each "
+        "preset, and the whole constraint stays infeasible across footprint "
+        "targets 176 through 224. "
+        "THE BLOCKER is solver._force_vertical_cover_center's hardcoded E/W axis, "
+        "jointly with exact tiling and kitchen-direct: relaxing any one of those "
+        "three admits it, and none of them is negotiable. The same axis blocks "
+        "the Guest WC wet-core fix (see "
+        "test_secondary_doors.py::test_guest_wc_joins_the_wet_core). Both clear "
+        "together when children's cut axis becomes solver-chosen. Strict: when "
+        "that lands, un-xfail rather than re-baseline."
+    ),
+)
+@pytest.mark.parametrize("preset", ["gW_eN", "gE_eN"])
+def test_kitchen_dining_two_hops_KNOWN_DEFECT(program, preset):
+    from app.validator import access_tree
+
+    r = solve(program, preset, seed=1, time_limit_s=12, workers=1)
+    assert r.feasible
+    layout = build_layout(r, program)
+    names = [rm.name for rm in layout.rooms]
+    edges, _reached, _root = access_tree(layout.rooms)
+    parent = {names[c]: names[p] for p, c in edges}
+
+    def ancestry(room: str) -> list[str]:
+        chain, cur = [], room
+        while cur is not None:
+            chain.append(cur)
+            cur = parent.get(cur)
+        return chain
+
+    up, down = ancestry("Kitchen"), ancestry("Dining")
+    common = next((n for n in up if n in down), None)
+    assert common is not None, f"{preset}: Kitchen and Dining are not connected"
+    hops = up.index(common) + down.index(common)
+    assert hops <= 2, (
+        f"{preset}: Kitchen is {hops} door-graph hops from Dining "
+        f"(via {common}); FUNCTIONAL_PAIRS asks for <= 2. "
+        f"Kitchen path {up}, Dining path {down}"
     )

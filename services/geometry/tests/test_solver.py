@@ -27,10 +27,13 @@ from app.solver import GRID_M, solve
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
-# Only the two entry-NORTH presets pack a CLEAN plan on roomy once the master
-# bedroom must front the corridor (Task 5): the hard-constraint sweeps run over
-# those. The entry-west presets yield no valid layout (see
-# test_ew_presets_yield_no_valid_layout).
+# The two entry-NORTH presets are the hard-constraint sweep set. They were also,
+# until Phase 1, the only presets that packed a CLEAN plan on roomy once the
+# master bedroom had to front the corridor (Task 5). Phase 1's area bands lifted
+# that for gE_eW, which now validates -- see
+# test_ew_presets_yield_no_valid_layout for the measurement. This list is left at
+# the two eN presets deliberately: it is the SWEEP set, and widening it would
+# change what every hard-constraint test below covers, which is a separate call.
 FEASIBLE_PRESETS = ["gW_eN", "gE_eN"]
 
 
@@ -45,16 +48,34 @@ def test_feasible_all_presets(program, preset, solve_time_s):
 
 @pytest.mark.parametrize("preset", ["gW_eW", "gE_eW"])
 def test_ew_presets_yield_no_valid_layout(program, preset):
-    # The entry-west presets cannot pack a clean plan on roomy now that the master
-    # bedroom must open off the corridor: gW_eW strands a child bedroom
-    # (unreachable under the privacy rule); gE_eW can only "solve" by the retry
-    # dropping the master<->kitchen avoid. Either way validation fails, so generate
-    # excludes them. Documented limitation, asserted so a future change that
-    # accidentally admits an invalid _eW plan is caught.
+    """PARTIALLY LIFTED IN PHASE 1 -- gE_eW now packs a VALID plan.
+
+    The limitation this test recorded was: with the master bedroom required to
+    open off the corridor, neither entry-west preset could pack a clean plan on
+    roomy, so `generate` excluded both. Phase 1's architect area bands changed
+    that. Measured on this commit (roomy, seed 1, time_limit_s=15, workers=1):
+
+        gW_eW  OPTIMAL, feasible, validate().ok == False
+               error: "Kitchen is reached via Living (through-living routing)"
+        gE_eW  OPTIMAL, feasible, validate().ok == True, 16 rooms, no errors
+
+    gE_eW is a WIN, not a drift: the bands give the zones shapes that let the
+    corridor front the master Bedroom AND reach the Kitchen with the entry
+    pinned west, which the pre-band envelope could not do. So the assertion is
+    now per-preset -- gW_eW keeps the old "nothing invalid leaks out" gate, and
+    gE_eW asserts the plan it now produces really is valid rather than silently
+    passing the old negative. The pinned expectation is what makes a future
+    regression on EITHER preset visible.
+    """
     from app.slicer import build_layout as _bl
     from app.validator import validate as _validate
 
     r = solve(program, preset, seed=1, time_limit_s=15, workers=1)
+    if preset == "gE_eW":
+        assert r.feasible, "gE_eW became feasible in Phase 1; it must stay so"
+        res = _validate(_bl(r, program), program)
+        assert res.ok, f"gE_eW must still yield a VALID layout, got {res.errors}"
+        return
     if not r.feasible:
         return  # infeasible is itself a clean "no invalid layout leaks out"
     assert not _validate(_bl(r, program), program).ok
@@ -158,6 +179,29 @@ def test_tight_is_illegal_brief(tight_program):
         )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "NEGATIVE CONTROL that lost its power in PHASE 1 (architect area bands) "
+        "-- the exact mirror of what happened to "
+        "test_validator.py::test_kitchen_direct_constraint_is_load_bearing, which "
+        "regained its power in the same commit. This test switches "
+        "_CHILD_CENTER_COVER OFF and asserts the hall Bathroom loses its direct "
+        "corridor wall, which is how it proved the constraint is what delivers "
+        "the guarantee. Under the area bands the band-shaped children zone lands "
+        "the Bathroom against the corridor ANYWAY when the constraint is off: "
+        "measured on gW_eW, cover OFF, Corridor<->Bathroom 2.00 m, direct == True "
+        "(it was 0.50 m when this control was written). "
+        "THE GUARANTEE ITSELF IS INTACT -- with the constraint ON, "
+        "Corridor<->Bathroom measures 2.00 m on BOTH feasible presets (gW_eN, "
+        "gE_eN), and _force_vertical_cover_center is in fact more load-bearing "
+        "than ever: it is the proven blocker for the Guest-WC wet-core and "
+        "Kitchen<->Dining fixes (see their xfails). It is the CONTROL that is no "
+        "longer discriminating, not the constraint. Strict, so if the packing "
+        "ever moves back to where switching the cover off strands the Bathroom, "
+        "that is the signal to un-xfail this."
+    ),
+)
 def test_children_bathroom_direct_needs_center_cover(roomy_program):
     # Proves _force_vertical_cover_center is LOAD-BEARING, not decorative: with it
     # OFF (children falls back to a plain corridor/entry disjunction) an entry-west
