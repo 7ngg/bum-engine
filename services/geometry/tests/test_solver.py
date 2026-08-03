@@ -47,39 +47,40 @@ def test_feasible_all_presets(program, preset, solve_time_s):
 
 
 @pytest.mark.parametrize("preset", ["gW_eW", "gE_eW"])
-def test_ew_presets_yield_valid_layouts(program, preset):
-    """FULLY LIFTED 2026-08-03 -- BOTH entry-west presets now pack a VALID plan.
+def test_ew_presets_pinned_outcomes(program, preset):
+    """The two entry-west presets, each pinned to its outcome AND its reason.
 
-    History, because this test has now been re-baselined twice and each move was
-    a real change of ground truth, not a drift:
+    History, because this has been re-baselined three times and each move was a
+    real change of ground truth:
 
-    - ORIGINALLY: with the master bedroom required to open off the corridor,
-      neither entry-west preset could pack a clean plan on roomy, so `generate`
-      excluded both. The test asserted "nothing invalid leaks out".
-    - PHASE 1 (architect area bands): gE_eW started producing a valid plan. The
-      test went per-preset -- gE_eW asserted valid, gW_eW kept the negative.
-      gW_eW's single remaining error was, verbatim:
-          "Kitchen is reached via Living (through-living routing)"
-    - THIS COMMIT: the architect re-ruled the through-living check (see
-      validator._living_substitutes_for_corridor for his words verbatim). The
-      rule is now on the Kitchen's DIRECT access parent, not its ancestor chain,
-      and gW_eW's Kitchen opens straight off the Corridor -- Living merely sat
-      higher up its tree. So gW_eW's error was the old rule's false positive and
-      the plan was valid all along.
+    - ORIGINALLY: neither entry-west preset could pack a clean plan on roomy once
+      the master bedroom had to open off the corridor; the test asserted
+      "nothing invalid leaks out".
+    - PHASE 1 (architect area bands): gE_eW started packing a VALID plan.
+    - c87d199 (the architect's kitchen ruling): gW_eW's only error had been
+      "Kitchen is reached via Living (through-living routing)", which the ruling
+      showed to be a false positive -- gW_eW's Kitchen opens straight off the
+      Corridor and Living merely sat higher up its tree. Both arms asserted valid.
+    - THIS COMMIT: gW_eW is INVALID again, on a DIFFERENT and correct ground.
+      The new full-ancestor-chain bedroom check (see validate_plan) finds that
+      gW_eW's Corridor hangs off the Living room -- it shares no door-width wall
+      with either the Foyer or the Mudroom -- so all three bedrooms are reached
+      across living space. The kitchen was never the real problem with this
+      packing; the bedroom wing was, and no gate could see it until now.
 
     Measured on this commit (roomy @192, seed 1, time_limit_s=15, workers=1):
 
-        gW_eW  OPTIMAL, feasible, validate().ok == True, 16 rooms, no errors
-               objective 638.40625, footprint 13.0 x 15.0, void 0.00, coverage
-               1.0000, 16/16 rooms reachable, Kitchen's access parent = Corridor
+        gW_eW  OPTIMAL, feasible, validate().ok == False, exactly 3 errors:
+               Master Bedroom, Bedroom 2 and Bedroom 3 each "reached from the
+               entry across habitable room(s) ['Living']"
+               objective 638.40625, footprint 13.0 x 15.0
         gE_eW  OPTIMAL, feasible, validate().ok == True, 16 rooms, no errors
                objective 534.65625, footprint 13.0 x 15.5
 
-    Both arms now assert the plan really IS valid rather than silently passing
-    an old negative, which is a STRONGER gate than the one it replaces: a
-    regression on either preset is visible either way, and a plan that stops
-    packing at all no longer hides inside the `if not r.feasible: return`
-    escape the negative arm used to need.
+    THE REASON IS PINNED, not just the outcome. A bare `assert not ok` would keep
+    passing if gW_eW later failed for some unrelated reason -- coverage, a band,
+    an unreachable room -- and would quietly stop testing the thing it is here
+    to test. So the assertion names the rooms and the offending room.
     """
     from app.slicer import build_layout as _bl
     from app.validator import validate as _validate
@@ -87,7 +88,25 @@ def test_ew_presets_yield_valid_layouts(program, preset):
     r = solve(program, preset, seed=1, time_limit_s=15, workers=1)
     assert r.feasible, f"{preset} must stay feasible on roomy"
     res = _validate(_bl(r, program), program)
-    assert res.ok, f"{preset} must yield a VALID layout, got {res.errors}"
+
+    if preset == "gE_eW":
+        assert res.ok, f"gE_eW must yield a VALID layout, got {res.errors}"
+        return
+
+    assert not res.ok, "gW_eW routes its bedroom wing across the Living room"
+    offenders = {
+        room
+        for room in ("Master Bedroom", "Bedroom 2", "Bedroom 3")
+        if any(
+            f"private room {room!r} is reached from the entry across habitable" in e
+            and "'Living'" in e
+            for e in res.errors
+        )
+    }
+    assert offenders == {"Master Bedroom", "Bedroom 2", "Bedroom 3"}, (
+        "gW_eW must be rejected for routing ALL THREE bedrooms across the Living "
+        f"room specifically; got errors {res.errors}"
+    )
 
 
 @pytest.mark.parametrize("preset", FEASIBLE_PRESETS)

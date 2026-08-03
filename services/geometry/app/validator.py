@@ -217,6 +217,16 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
 ACCESS_DOOR_M = 0.9  # an access-graph edge needs a shared wall a door fits in
 
 
+# The norm's жилые помещения — living space proper. A room in one of these
+# categories is somewhere you LIVE, so crossing it to reach a bedroom is what
+# SNiP 2.08.01-89's non-through-bedroom requirement is about. Service ("service":
+# Mudroom, Laundry, Garage) and wet ("wet": Bathroom, WC) rooms are auxiliary and
+# are NOT living space, so they do not offend the bedroom-path rule. Circulation
+# ("circ") is excluded at the call site, not here, because circulation is the
+# thing the route is SUPPOSED to be made of.
+_HABITABLE_CATEGORIES = {"living", "office", "private"}
+
+
 def _is_public(name: str, category: str) -> bool:
     """The social zone that must not be reached through a private/bedroom wing:
     the living/dining rooms plus the (open-plan) Kitchen. Used for the mirror of
@@ -364,6 +374,63 @@ def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
                 f"{names[parent]!r} (private/non-public) - social zone routed through a private room"
             )
 
+    parent_of = {c: p for p, c in edges}
+
+    # BEDROOM PATH, WHOLE CHAIN (2026-08-03). SNiP 2.08.01-89: through-bedroom
+    # circulation is not a legal mode, and the privacy that rule protects is not
+    # delivered by the bedroom's own door alone — it is delivered by the ROUTE.
+    # So no room on a bedroom's path from the front door may be a habitable
+    # non-circulation room.
+    #
+    # THE TIER-1 RULE ABOVE IS NECESSARY BUT NOT SUFFICIENT, and this is not a
+    # theoretical gap — it shipped. Measured on gW_eW at c87d199:
+    #     Foyer(d0) -> Living(d1) -> Corridor(d2) -> Master Bedroom(d3)
+    # Every bedroom's immediate parent is the Corridor, so tier 1 passes cleanly,
+    # and yet EVERY route to EVERY bedroom crosses the living room, because
+    # nothing constrained what the CORRIDOR itself hangs off (it shared no
+    # door-width wall with either the Foyer or the Mudroom). Same defect class
+    # this repo has hit before: a guarantee enforced at one level and defeated
+    # one level above it. Hence the full ancestor walk.
+    #
+    # DELIBERATELY NOT THE SAME RULE AS THE KITCHEN'S, one block below. The
+    # architect's 2026-08-03 ruling lets the living room BE the kitchen's route
+    # when it substitutes for the corridor, and that ruling is about the kitchen
+    # and about a household's own food-carrying flow. He has never relaxed the
+    # bedroom rule and the norm does not either: a bedroom is private, and its
+    # privacy does not depend on which room the front door happens to open into.
+    # The two checks are therefore allowed to DISAGREE on the same plan — a
+    # layout may legally route the kitchen through the living room and still be
+    # rejected for routing a bedroom through it. Do not merge them.
+    #
+    # "Habitable" is the norm's жилое помещение, not "any room": living/dining,
+    # the study, and bedrooms themselves. A Mudroom (service) or a Bathroom (wet)
+    # on the path is auxiliary, not living space, and does not offend the rule —
+    # which is why the shipped gW_eN/gE_eN route Foyer -> Mudroom -> Corridor and
+    # stay legal.
+    for i in range(len(rooms)):
+        spec = standards.ROOMS.get(names[i])
+        if not (
+            spec
+            and spec.no_through_traffic
+            and cats[i] == "private"
+            and not spec.allowed_ensuite_parents
+        ):
+            continue
+        if i not in reached:
+            continue  # already reported as unreachable; don't double-report
+        crossed: list[str] = []
+        cur = i
+        while cur in parent_of:
+            cur = parent_of[cur]
+            if cats[cur] != "circ" and cats[cur] in _HABITABLE_CATEGORIES:
+                crossed.append(names[cur])
+        if crossed:
+            errors.append(
+                f"access graph: private room {names[i]!r} is reached from the entry "
+                f"across habitable room(s) {crossed} - the bedroom wing must not be "
+                f"routed through living space (SNiP 2.08.01-89)"
+            )
+
     # Kitchen-direct invariant (Task 6), re-ruled by the architect 2026-08-03.
     #
     # NORM BASIS, unchanged and still the reason the base rule exists: Neufert
@@ -406,7 +473,6 @@ def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
     # warning — shipping the plan visibly flagged beats shipping nothing.
     if "Kitchen" in names and not any(w.startswith(KITCHEN_FALLBACK_TAG) for w in layout.warnings):
         kidx = names.index("Kitchen")
-        parent_of = {c: p for p, c in edges}
         if kidx in reached and kidx in parent_of:
             pidx = parent_of[kidx]
             through_living = False

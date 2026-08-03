@@ -147,6 +147,25 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   every room is reachable through exactly one tree path), plus one **main
   entry** door (prefers Foyer's north/street-facing exterior wall) and a
   **terrace** projecting south off Living.
+
+  **OPEN DEFECT — composite room starvation (measured 2026-08-03).** Inside
+  every composite zone the slicer pins the *headline* room to its area floor and
+  hands all the slack to the *ancillary* room. Measured on roomy @192, gW_eN
+  (footprint 201.50 m², 48.46 m² of slack above the binding floors):
+
+  | zone | headline room | ancillary |
+  |---|---|---|
+  | `kitchen_laundry` | Kitchen **10.00 = its floor, +0.00** | Laundry **+4.00** |
+  | `children` | Bedroom 2 and 3 **12.00 = floor, +0.00** | Bathroom **+3.92** |
+  | `master_suite` | Master Bedroom **+0.50** | Walk-in Closet **+3.30** |
+  | `entry` | Mudroom **3.00 = floor, +0.00** | Foyer +1.00 |
+
+  The objective's coverage term is **indifferent about which room grows** — it
+  only rewards filling the footprint with no void — so it is the composite CUT,
+  not the objective, that decides. Every number passes (all 16 rooms sit inside
+  their architect bands), and the plan still reads as cramped in a drawing: the
+  rooms a client actually names are the ones on their minimums. This is a
+  quality defect independent of the diversity work and it is not fixed.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not
@@ -154,10 +173,24 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   (kitchen↔dining, dining↔living, master↔ensuite) only warn — a sliced-out
   room can legitimately be absent.
 - **`generate.py`** — fans out `PRESETS × seeds` (default seeds `[1,2,3,4]`),
-  solves + slices + validates each, keeps the best-scoring passing variant per
-  preset (for diversity) then backfills from spares by objective, deduped by
-  a `(preset, coarse room footprint)` signature. Only validator-passing
-  variants ever leave this function.
+  solves + slices + validates each, then selects by **greedy maximin over
+  `_facade_distance`** (each room → which faces of the house it touches; the
+  distance is minimised over the four rectangle symmetries, so a near-mirror
+  scores near zero rather than maximally distant). Candidates at distance 0 are
+  dropped rather than returned as filler. Only validator-passing variants ever
+  leave this function.
+
+  **Exactly ONE valid arrangement exists on the rectangle model** at roomy @192,
+  in two handednesses (`gW_eN` and its mirror `gE_eN`; `gE_eW` reproduces the
+  latter byte for byte, and all four default seeds reproduce the same optimum
+  because the solve proves OPTIMAL). `Variant.arrangement` marks which
+  arrangement each returned plan is — variants sharing an id are the same house
+  flipped, and the UI must say "same layout, two orientations" rather than
+  implying two designs. Five levers were each measured and exhausted (objective
+  reweighting, coverage slack, pin relaxation, the 128-configuration pin sweep,
+  the architect's kitchen ruling); **footprint shape (L, U) is the open path**.
+  See `tests/test_generate.py::test_at_least_three_distinct_arrangements`, a
+  strict xfail carrying the full evidence.
 - **`schema_io.py`** — deliberately validates twice: pydantic models
   (`models.py`) guard in-process shape/types; `jsonschema` against
   `/schemas/*.schema.json` guards the actual wire contract shared with the C#
