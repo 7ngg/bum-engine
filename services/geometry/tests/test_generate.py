@@ -63,30 +63,34 @@ def test_dod_adjacencies(roomy_program):
         assert geom.shared_edge(m, kitchen) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN REGRESSION (b990700, the master-bedroom-window fix): "
-        "Kitchen<->Dining no longer share a wall at the room level on the "
-        "roomy 184 m2 fixture -- Laundry sits between them. Root cause: "
-        "66f3506 made _slice_kitchen let the corridor-facing side win over "
-        "the dining-facing side on conflict; b990700's repacking (freeing "
-        "the corridor to front master_suite from the north) put "
-        "kitchen_laundry's corridor side and dining side into that conflict "
-        "at 184, where before b990700 it wasn't. REQUIRED_ADJ is zone-level "
-        "only, so validate() can't see it. Not fixed; see b990700's commit "
-        "message and tests/test_validator.py's "
-        "test_kitchen_dining_room_level_KNOWN_REGRESSION for the same fact. "
-        "PHASE 1: the root cause named above is superseded. The corridor/dining "
-        "conflict is not something a repacking happened to create -- it is the "
-        "only configuration the model can pack at all. See "
-        "test_validator.py::test_kitchen_dining_two_hops_KNOWN_DEFECT for the "
-        "16-config enumeration and the blocker."
-    ),
-)
-def test_dod_kitchen_dining_adjacency_KNOWN_REGRESSION(roomy_program):
-    g = generate(roomy_program, n=1)
+def test_dod_kitchen_dining_adjacency_holds_in_the_shipped_variant(roomy_program):
+    """UN-XFAILED 2026-08-03. Was a strict xfail recording that Kitchen<->Dining
+    do not share a room-level wall in the variant generate() ships first.
+
+    WHAT CHANGED, precisely -- and it is NOT that the underlying defect was
+    fixed: the architect's through-living ruling (see
+    validator._living_substitutes_for_corridor) admitted gW_eW, which was being
+    rejected on a false positive of the old ancestor-chain rule. gW_eW scores
+    638.40625 against gW_eN's 534.65625, so it is now the top-ranked variant --
+    and in gW_eW's packing the Kitchen and the Dining room DO share a wall.
+
+    The per-preset defect is untouched and still recorded, still strict-xfail,
+    in the two places that assert it against a FIXED preset rather than against
+    whatever generate() ranks first:
+        tests/test_golden.py::test_golden_kitchen_dining_room_level_KNOWN_REGRESSION
+        tests/test_validator.py::test_kitchen_dining_room_level_KNOWN_REGRESSION
+    Both still xfail on gW_eN/gE_eN. So this test is now a statement about the
+    plan we actually SHIP, and those two remain the statement about the model.
+
+    workers=1 is pinned deliberately: this asserts a property of the top-RANKED
+    variant, so it must not be exposed to the thread-portfolio nondeterminism
+    that generate()'s production workers=8 default carries (see CLAUDE.md).
+    """
+    g = generate(roomy_program, n=1, workers=1)
     lay = g.variants[0].layout
+    assert lay.preset == "gW_eW", (
+        f"the ranking this test depends on moved: top variant is {lay.preset!r}"
+    )
     kitchen = _rooms(lay, "Kitchen")[0]
     dining = _rooms(lay, "Dining")[0]
     assert geom.adjacent(kitchen, dining)

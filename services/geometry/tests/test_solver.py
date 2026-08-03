@@ -47,38 +47,47 @@ def test_feasible_all_presets(program, preset, solve_time_s):
 
 
 @pytest.mark.parametrize("preset", ["gW_eW", "gE_eW"])
-def test_ew_presets_yield_no_valid_layout(program, preset):
-    """PARTIALLY LIFTED IN PHASE 1 -- gE_eW now packs a VALID plan.
+def test_ew_presets_yield_valid_layouts(program, preset):
+    """FULLY LIFTED 2026-08-03 -- BOTH entry-west presets now pack a VALID plan.
 
-    The limitation this test recorded was: with the master bedroom required to
-    open off the corridor, neither entry-west preset could pack a clean plan on
-    roomy, so `generate` excluded both. Phase 1's architect area bands changed
-    that. Measured on this commit (roomy, seed 1, time_limit_s=15, workers=1):
+    History, because this test has now been re-baselined twice and each move was
+    a real change of ground truth, not a drift:
 
-        gW_eW  OPTIMAL, feasible, validate().ok == False
-               error: "Kitchen is reached via Living (through-living routing)"
+    - ORIGINALLY: with the master bedroom required to open off the corridor,
+      neither entry-west preset could pack a clean plan on roomy, so `generate`
+      excluded both. The test asserted "nothing invalid leaks out".
+    - PHASE 1 (architect area bands): gE_eW started producing a valid plan. The
+      test went per-preset -- gE_eW asserted valid, gW_eW kept the negative.
+      gW_eW's single remaining error was, verbatim:
+          "Kitchen is reached via Living (through-living routing)"
+    - THIS COMMIT: the architect re-ruled the through-living check (see
+      validator._living_substitutes_for_corridor for his words verbatim). The
+      rule is now on the Kitchen's DIRECT access parent, not its ancestor chain,
+      and gW_eW's Kitchen opens straight off the Corridor -- Living merely sat
+      higher up its tree. So gW_eW's error was the old rule's false positive and
+      the plan was valid all along.
+
+    Measured on this commit (roomy @192, seed 1, time_limit_s=15, workers=1):
+
+        gW_eW  OPTIMAL, feasible, validate().ok == True, 16 rooms, no errors
+               objective 638.40625, footprint 13.0 x 15.0, void 0.00, coverage
+               1.0000, 16/16 rooms reachable, Kitchen's access parent = Corridor
         gE_eW  OPTIMAL, feasible, validate().ok == True, 16 rooms, no errors
+               objective 534.65625, footprint 13.0 x 15.5
 
-    gE_eW is a WIN, not a drift: the bands give the zones shapes that let the
-    corridor front the master Bedroom AND reach the Kitchen with the entry
-    pinned west, which the pre-band envelope could not do. So the assertion is
-    now per-preset -- gW_eW keeps the old "nothing invalid leaks out" gate, and
-    gE_eW asserts the plan it now produces really is valid rather than silently
-    passing the old negative. The pinned expectation is what makes a future
-    regression on EITHER preset visible.
+    Both arms now assert the plan really IS valid rather than silently passing
+    an old negative, which is a STRONGER gate than the one it replaces: a
+    regression on either preset is visible either way, and a plan that stops
+    packing at all no longer hides inside the `if not r.feasible: return`
+    escape the negative arm used to need.
     """
     from app.slicer import build_layout as _bl
     from app.validator import validate as _validate
 
     r = solve(program, preset, seed=1, time_limit_s=15, workers=1)
-    if preset == "gE_eW":
-        assert r.feasible, "gE_eW became feasible in Phase 1; it must stay so"
-        res = _validate(_bl(r, program), program)
-        assert res.ok, f"gE_eW must still yield a VALID layout, got {res.errors}"
-        return
-    if not r.feasible:
-        return  # infeasible is itself a clean "no invalid layout leaks out"
-    assert not _validate(_bl(r, program), program).ok
+    assert r.feasible, f"{preset} must stay feasible on roomy"
+    res = _validate(_bl(r, program), program)
+    assert res.ok, f"{preset} must yield a VALID layout, got {res.errors}"
 
 
 @pytest.mark.parametrize("preset", FEASIBLE_PRESETS)

@@ -364,31 +364,94 @@ def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
                 f"{names[parent]!r} (private/non-public) - social zone routed through a private room"
             )
 
-    # Kitchen-direct invariant (Task 6): Living must never be an ANCESTOR of
-    # Kitchen on the access tree — the client-reported pathology of kitchen
-    # traffic routed through the living room via the Dining->Living chain.
-    # _is_public's mirror rule above permits Kitchen<-Living (Living IS
-    # public), so that rule alone can't catch this; this asserts the
-    # stronger, kitchen-specific invariant directly. The one authorized
-    # exception is generate.py's flagged area-limitation fallback: when the
-    # footprint was too small for solver.py's kitchen-direct constraint, the
-    # caller already disclosed that via a KITCHEN_FALLBACK_TAG-prefixed
-    # warning, and shipping the plan visibly flagged beats shipping nothing.
+    # Kitchen-direct invariant (Task 6), re-ruled by the architect 2026-08-03.
+    #
+    # NORM BASIS, unchanged and still the reason the base rule exists: Neufert
+    # p47/p55 — no door path may transit the Kitchen (the worktop-cooker-sink
+    # sequence is not a circulation mode) — plus SNiP 2.08.01-89's Posobie,
+    # apartment-planning section, which is what the client-reported pathology
+    # violated: kitchen traffic routed through the living room via the
+    # Dining->Living chain. _is_public's mirror rule above permits
+    # Kitchen<-Living (Living IS public), so that rule alone cannot catch it.
+    #
+    # ARCHITECT'S RULING (2026-08-03), verbatim, so nobody re-litigates this
+    # from the norm text alone — the norm does not settle it, he does:
+    #   "bu qayda layihedan layihaya deyisir. men dusunurem ki bele bir qayda
+    #    qoya bilerik ki, metbexe layihedeki insan axisina gore 2 cur kecid
+    #    olsun. 1- direk karidordan kecid. 2- qonaq otagindan kecid (eger qonaq
+    #    otagi karidoru evez edirse. yeni bezi layihelerde giris qapisi direkt
+    #    qonaq otagina acilir.) bu zaman qonaq otagindan kecid ola biler."
+    #   ("The rule varies from project to project. I think we can set the rule
+    #    that the kitchen has 2 kinds of access, according to the human flow of
+    #    the project. 1 - direct access from the corridor. 2 - access through
+    #    the living room (IF the living room is substituting for the corridor,
+    #    i.e. in some projects the entry door opens directly into the living
+    #    room). In that case access through the living room may exist.")
+    #
+    # He asked for it as an if/else, and it is one. The decisive quantity is the
+    # Kitchen's DIRECT access parent, not its ancestor chain. The chain scan
+    # this replaced was wrong in BOTH directions: it rejected plans whose
+    # Kitchen opens straight off the Corridor merely because Living sat higher
+    # up the tree (Foyer->Living->Corridor->Kitchen — a corridor-direct kitchen
+    # by any reading), and it would have rejected the open-plan case he
+    # explicitly authorises.
+    #
+    # The residual ELSE (parent is neither circulation nor Living) keeps the old
+    # ancestor scan deliberately: that is the branch the actual pathology lands
+    # in (Kitchen<-Dining<-Living), and it is what
+    # test_kitchen_direct_constraint_is_load_bearing measures.
+    #
+    # The one authorized exception is unchanged: generate.py's flagged
+    # area-limitation fallback, disclosed via a KITCHEN_FALLBACK_TAG-prefixed
+    # warning — shipping the plan visibly flagged beats shipping nothing.
     if "Kitchen" in names and not any(w.startswith(KITCHEN_FALLBACK_TAG) for w in layout.warnings):
         kidx = names.index("Kitchen")
-        if kidx in reached:
-            parent_of = {c: p for p, c in edges}
-            cur = kidx
-            while cur in parent_of:
-                cur = parent_of[cur]
-                if names[cur] == "Living":
-                    errors.append(
-                        "access graph: Kitchen is reached via Living (through-living "
-                        "routing) - kitchen must be corridor-direct unless flagged as "
-                        "an area limitation"
-                    )
-                    break
+        parent_of = {c: p for p, c in edges}
+        if kidx in reached and kidx in parent_of:
+            pidx = parent_of[kidx]
+            through_living = False
+            if cats[pidx] == "circ":
+                pass  # case 1: corridor-direct. Always acceptable.
+            elif names[pidx] == "Living":
+                # case 2: acceptable only while the living room IS the circulation.
+                through_living = not _living_substitutes_for_corridor(layout)
+            else:
+                # Neither case. Pre-ruling behaviour: any Living in the chain is
+                # through-living routing (Kitchen<-Dining<-Living is the one the
+                # client reported).
+                cur = kidx
+                while cur in parent_of:
+                    cur = parent_of[cur]
+                    if names[cur] == "Living":
+                        through_living = True
+                        break
+            if through_living:
+                errors.append(
+                    "access graph: Kitchen is reached via Living (through-living "
+                    "routing) - kitchen must be corridor-direct unless flagged as "
+                    "an area limitation"
+                )
     return errors
+
+
+def _living_substitutes_for_corridor(layout: Layout) -> bool:
+    """The architect's stated condition for his case 2: the entry door opens
+    DIRECTLY into the living room ("giris qapisi direkt qonaq otagina acilir"),
+    which is what makes the living room the plan's circulation rather than a
+    room the circulation is dragged through.
+
+    Measured off the geometry, never approximated: `layout.entry` is the single
+    front door, built by slicer._build_entry with from_="OUTSIDE" and `to`
+    naming the room it opens into (that builder prefers Foyer, then Mudroom,
+    then Living — so `to == "Living"` means the plan genuinely has no entry hall
+    at all). layout.doors is swept too because the entry door is the one opening
+    that lives in its own field, and a caller assembling a Layout by hand may
+    put it in either place.
+    """
+    entry = getattr(layout, "entry", None)
+    if entry is not None and entry.from_ == "OUTSIDE" and entry.to == "Living":
+        return True
+    return any(d.from_ == "OUTSIDE" and d.to == "Living" for d in layout.doors)
 
 
 def _check_neufert_standards(layout: Layout, errors: list[str]) -> None:
