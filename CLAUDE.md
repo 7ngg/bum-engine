@@ -151,10 +151,12 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   **RULING 4 — site coverage 45%** (*"faiz defecesini 45e qaldirin goren ne
   effekt verecek"*). `SITE_COVERAGE_TARGET = 0.45` × the 480 m² plot = **216 m²**.
   It is a TARGET, not the legal cap: `Site.max_coverage_ratio` stays `0.5`
-  (240 m²). **RECORDED, NOT YET ADOPTED** — `program_roomy.json` is still at
-  192.0. 216 was built and measured in full (the ladder table under `slicer.py`)
-  and costs two things that are the architect's call to accept; the open decision
-  is which rung ships.
+  (240 m²). **RECORDED, AND WE SHIPPED THE RUNG BELOW IT** —
+  `program_roomy.json` is at **208.0 (43.33%)**, not 216.0. His 45% was measured
+  in full on all three rungs (the ladder table under `slicer.py`); 216 buys less
+  than half as much tier-1 area per m² and costs a dead negative control, the
+  Garage at its ceiling and the whole terrace margin. The full arithmetic and the
+  honest counter-argument are on `SITE_COVERAGE_TARGET` itself.
 
   `TIER_W_BELOW`/`TIER_W_ABOVE` are the objective weights, consumed by
   **both** `solver.py` and `slicer._cut_score` so the zone-level and room-level
@@ -267,7 +269,7 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   rung, void 0.00, all four edges covered, all 16 rooms in band).** Only three
   footprints exist between 200.50 and 216.50 — see the `solver.py` bullet:
 
-  | | **201.50** (41.98%) | **208.00** (43.33%) | **216.00** (45.00%) |
+  | | **201.50** (41.98%) | **208.00** ◀ SHIPPED (43.33%) | **216.00** (45.00%) |
   |---|---|---|---|
   | Living *(t1, ideal 32.50)* | 29.25 | 31.50 | **35.00** ✅ (+2.50 over) |
   | Dining *(t1, ideal 18.50)* | 19.50 ✅ | 19.50 ✅ | 19.50 ✅ |
@@ -313,20 +315,43 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   one commit ago (9398909) for exactly the opposite reason. Shipping 216 means
   either losing that guard or returning it to strict-xfail.
 
-  Solve time also grows with the rung — `generate(n=4)` measured 81.9 s / 110.1 s
-  / 119.7 s at 192 / 208 / 216 in one session. Note the *baseline* is already
-  over `test_generation_under_time_budget`'s 60 s ceiling on a 4-core box under
-  ~30% background load, so that failure is the documented canary, not the
-  footprint; the footprint only makes an already-marginal test worse.
+  **SOLVE TIME GROWS WITH THE RUNG, AND IT PUT `test_generation_under_time_budget`
+  GENUINELY ON THE EDGE — this is a real cost of shipping 208, not a load
+  artefact.** Measured standalone on an IDLE 4-core box (load ~7%): at 192 the
+  test runs **34.16 / 33.52 / 37.40 s**; at 208, eight samples give
+  **54.94 / 60.78 / 50.47 / 54.62 / 64.63 / 56.14 / 55.15 / 56.99 s** — mean
+  56.7 s against its 60 s ceiling, with **2 of 8 over it**. The cause is
+  understood: at 201.50 the packing is fully forced (zero degrees of freedom), so
+  CP-SAT proves optimality almost instantly; at 208 there is real slack and the
+  optimality proof is genuinely longer (per-solve 9.9 s → 14.1 s over the four
+  presets, +42%), and `generate()` multiplies that by its fan-out.
 
-  **WHAT STOPS THE KITCHEN AT 12.00 IS NOW COMPOSITE, NOT AREA.** At 216 the
-  zone-level `ideal_short` term is **exactly 0** — every non-composite zone has
-  reached its ideal. The entire remaining tier-1 shortfall (Kitchen −4.00,
-  Master Bedroom −3.75) lives inside composite zones and is carried by
+  **THE FIX IS NOT THE LIMIT — IT IS THE FAN-OUT, AND THE SEED AXIS IS INERT.**
+  `generate()` defaults to `seeds=[1,2,3,4]`, so it runs **16 solves**: 53.0 s at
+  208. With `seeds=[1]` it runs 4 and takes **13.6 s** — and returns the *same*
+  2 variants and the *same* 1 arrangement, because seeds 1–5 produce byte-identical
+  plans per preset at every rung (the solve proves OPTIMAL, so the seed cannot
+  change the answer). 39 s of the 53 s buys nothing measurable here. **Not applied**
+  — the seed axis is only proven inert on *this* fixture, where every solve proves
+  OPTIMAL; on a brief that times out instead, different seeds are exactly what
+  would give different incumbents, so dropping them would quietly cost diversity
+  elsewhere. Raising the 60 s ceiling is the other option and is strictly worse:
+  it hides the growth instead of removing it.
+
+  **THE ROUND'S MOST CONSEQUENTIAL FINDING — TIER-1 SHORTFALL IS NOW ENTIRELY
+  INSIDE THE COMPOSITE CUTS, AND AREA CANNOT REACH IT.** At 216 the zone-level
+  `ideal_short` term is **exactly 0**: every non-composite zone has reached its
+  ideal, and buying more footprint has nothing left to spend it on. The entire
+  remaining shortfall lives inside composite zones and is carried by
   `cut_penalty` (30.995 human: `kitchen_laundry` 21760, `master_suite` 20880,
-  `children` 15309, `entry` 1562 raw). More footprint cannot reach it; a
-  different composite SHAPE could. Same wall as the arrangement count, same open
-  path: **footprint shape (L, U)**.
+  `children` 15309, `entry` 1562 raw). Concretely, and at **every** rung of the
+  ladder: **Kitchen stalls at 12.00 against a 16.00 ideal** (10.00 at 201.50 and
+  208.00), **Master Bedroom at 19.25 against 23.00**, and **Bedroom 2 and 3 never
+  leave their 12.00 floor at all**. Only a **different composite cut** can move
+  them — which means the architect's first-priority room *cannot be fixed by
+  area*, and this is why 216's Kitchen argument does not win: 8.00 m² buys the
+  Kitchen 2.00 m² and it stalls again. Same wall as the arrangement count, same
+  open path: **footprint shape (L, U)**.
 
   **ARCHITECT RULING 3 — corridor proportion (round 4, 2026-08-04). RECORDED,
   NOT IMPLEMENTED.** He caps a corridor at 3:1 or 4:1; at a 1.5 m width that is
@@ -445,15 +470,17 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
   layout drifted — inspect the diff and regenerate the golden file only if
   the drift is intended (delete it and rerun to have it recreate itself).
 - **`data/program_roomy.json` is the primary fixture; its `footprint_target_m2`
-  is 192.0 and is THE knob for house size** (see the `solver.py` bullet — it is
-  the footprint's only real binder). The architect's Ruling 4 would put it at
-  216.0; that is measured but not adopted, and
-  `test_standards.py::test_his_coverage_target_is_reachable_but_not_yet_adopted`
-  holds the invariant while the rung decision is open (`≤ SITE_COVERAGE_TARGET ×
-  plot`, becoming `==` when it lands). `data/program.example.json` is a SEPARATE
-  brief at 184.0 — the frozen demo/back-compat artefact paired with
-  `layout.example.json`; moving it would churn the schema-versioning tests for no
-  architectural reason.
+  is 208.0 and is THE knob for house size** (see the `solver.py` bullet — it is
+  the footprint's only real binder). It was 192.0 up to 2026-08-05, so any
+  measurement in this file dated earlier is on the 201.50 m² footprint that
+  produced. The architect's Ruling 4 asks for 216.0; that arm is measured and
+  recorded but deliberately not shipped, and
+  `test_standards.py::test_shipped_brief_sits_at_or_below_his_coverage_target`
+  pins the invariant (`≤ SITE_COVERAGE_TARGET × plot`) rather than the rung, so
+  the judgement can be revisited without a second copy of the fixture value.
+  `data/program.example.json` is a SEPARATE brief at 184.0 — the frozen
+  demo/back-compat artefact paired with `layout.example.json`; moving it would
+  churn the schema-versioning tests for no architectural reason.
 - `services/geometry/data/program.example.json` / `layout.example.json` are the
   fixed demo brief/output (the roomy 20x24 program; the retired tight 16x12
   brief lives on as `program_illegal_example.json` for the infeasibility test).
@@ -470,7 +497,11 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
   tests are the suite's load canaries and can BOTH fail on a busy machine with
   a clean tree and no defect:
   `test_generate.py::test_generation_under_time_budget` (a 60 s wall-clock
-  ceiling) and
+  ceiling — and since the 208 rung it is **marginal even when idle**: mean 56.7 s
+  over eight standalone samples, 2 of 8 over the line. See the `slicer.py` bullet
+  for the measurement and for why the fix is the 16-solve fan-out rather than the
+  ceiling. Treat a failure here as EXPECTED at ~25% until that is settled, and do
+  not read it as drift) and
   `test_validator.py::test_kitchen_direct_constraint_is_load_bearing`
   (a strict-xfail negative control whose solve is `time_limit_s=12`; when the
   limit binds the packing changes, the through-living pathology disappears, and

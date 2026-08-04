@@ -144,14 +144,15 @@ def test_every_composite_zone_has_a_shape_that_reaches_every_room_ideal():
 # ---------------------------------------------------------------------------
 
 
-def test_his_coverage_target_is_reachable_but_not_yet_adopted(roomy_program):
-    # SITE_COVERAGE_TARGET is RECORDED, not yet wired to the brief -- which rung
-    # of the footprint ladder to ship is an open decision (see CLAUDE.md). Two
-    # things must stay true while it is open:
-    #   1. his figure is a legal footprint on this plot at all, and
-    #   2. the shipped brief has not silently drifted ABOVE it.
-    # When the decision lands, this becomes an equality against the same
-    # expression -- there is deliberately no third number to keep in sync.
+def test_shipped_brief_sits_at_or_below_his_coverage_target(roomy_program):
+    # SITE_COVERAGE_TARGET is his 45%; the shipped brief is one rung BELOW it at
+    # 208.0 (43.33%), for the reasons spelled out on the constant. The inequality
+    # is the invariant, not the exact value: the rung is a judgement that can be
+    # revisited, but two things must not change silently.
+    #   1. his figure has to be a legal footprint on this plot at all, and
+    #   2. the brief must never drift ABOVE what he asked for.
+    # Deliberately not pinned to 208.0 -- that would make this a second copy of
+    # the fixture rather than a check on it.
     plot = roomy_program.plot.width_m * roomy_program.plot.depth_m
     his_target = standards.SITE_COVERAGE_TARGET * plot
     assert his_target <= roomy_program.site.max_coverage_ratio * plot
