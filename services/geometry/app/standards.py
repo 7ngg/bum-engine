@@ -145,11 +145,54 @@ ARCHITECT_AREA_BANDS: dict[str, tuple[float, float]] = {
 # RULING 3 -- corridor proportion -- is NOT implemented here and is deliberately
 # out of scope for this commit; it is recorded in CLAUDE.md with its numbers.
 # ---------------------------------------------------------------------------
+#
+# ROUND 5, 2026-08-04 -- HIS ANSWERS TO THE TWO OPEN QUESTIONS, PLUS THE
+# COVERAGE INSTRUCTION. The two ">>> OPEN QUESTION" markers below are kept and
+# marked ANSWERED rather than deleted, so the reasoning that produced the
+# question survives next to his answer.
+#
+# RULING 4 -- site coverage:
+#   "faiz defecesini 45e qaldirin goren ne effekt verecek"
+#   -- raise the percentage to 45 and see what effect it has.
+# 45% of the 480 m2 plot = 216 m2. The percentage he is raising is the ~40%
+# figure of his round 3 (192/480), NOT the legal cap: Site.max_coverage_ratio
+# stays 0.5 (240 m2), which is the ceiling the plan may not cross rather than a
+# target. See SITE_COVERAGE_TARGET.
+
+
+# The architect's SITE COVERAGE TARGET as a fraction of the plot (Ruling 4
+# above). It is a DESIGN figure, and the only thing in the model it can actually
+# drive is program.footprint_target_m2, a BRIEF number.
+#
+# *** RECORDED, NOT YET ADOPTED. *** program_roomy.json is still at 192.0 (40%),
+# not 216.0 (45%). Not an oversight and not a disagreement with him -- 216 was
+# built and measured in full (CLAUDE.md carries the whole ladder), and it costs
+# two things that are his call, not ours, to accept: the Garage inflates to its
+# 40.00 ceiling, and test_solver.py's center-cover negative control goes dead
+# (at 216 the gW_eW Bathroom is corridor-direct even with the constraint OFF,
+# proven at OPTIMAL). The intervening rung, 208.00 m2 (43.33%), has neither
+# cost. Which rung ships is the open decision this constant is waiting on.
+#
+# DO NOT CONFUSE IT WITH Site.max_coverage_ratio (default 0.5). That one is the
+# hard legal cap (`fp.area <= floor(ratio * plot_cells)`) and is unchanged by
+# this ruling. Measured 2026-08-04, roomy 20x24: at footprint_target_m2 = 192 the
+# three candidate binders sit at 221.00 m2 (FOOTPRINT_HI), 240.00 m2
+# (max_coverage_ratio) and 192.00 m2 (fp_dev's pull), and the solve still lands
+# on 201.50 -- so NEITHER cap was ever the binder. See solver.py's fp_dev block.
+SITE_COVERAGE_TARGET = 0.45
 
 # Room name -> priority tier, per Ruling 2 above.
 #
-# >>> OPEN QUESTION FOR THE ARCHITECT (1 of 2) — DINING'S TIER. Unresolved on
-# >>> purpose; do not settle it from this file. See the note below.
+# >>> OPEN QUESTION FOR THE ARCHITECT (1 of 2) — DINING'S TIER. *** ANSWERED
+# >>> 2026-08-04, round 5: TIER 1, confirmed. *** His words:
+# >>>   "Yemekxana (Dining Room) mehz Tier 1-e aiddir. Onu Tier 1 kimi
+# >>>    saxlamaginiz tamamile dogrudur, cunki o, metbex ve salon ile birlikde
+# >>>    evin esas sosial ucluyunu teskil edir."
+# >>> -- The dining room belongs to Tier 1. Keeping it as Tier 1 is entirely
+# >>> correct, because together with the kitchen and the living room it forms the
+# >>> house's core social trio. The inference below turned out to match his
+# >>> intent; it is kept because it is why the question was asked, and because
+# >>> the +7.50 m2 it holds is still the table's most consequential single entry.
 #
 # The three rooms in tier 1 and the two categories in tier 2 are HIS, verbatim.
 # Tier 3 is the only list with an explicit catch-all ("and other ancillary
@@ -171,7 +214,7 @@ PRIORITY_TIER: dict[str, int] = {
     "Kitchen": 1,
     "Living": 1,
     "Master Bedroom": 1,
-    "Dining": 1,               # INFERRED from his category label -- see above
+    "Dining": 1,               # HIS WORD too, round 5 -- see above (was inferred)
     # --- tier 2, private: HIS LIST, verbatim -------------------------------
     "Bedroom 2": 2,
     "Bedroom 3": 2,
@@ -201,8 +244,20 @@ DEFAULT_TIER = 3  # an unlisted room is ancillary until he says otherwise
 #
 # >>> OPEN QUESTION FOR THE ARCHITECT (2 of 2) — THE TWO FRACTIONS. f(1) = 1/2
 # >>> and f(2) = 1/4 are OURS, not his. Only the tier ORDER is his, and f(3) = 0
-# >>> is his wording ("kept at minimum") rather than a dial. Unresolved on
-# >>> purpose; these two numbers are what to take back to him with this table.
+# >>> is his wording ("kept at minimum") rather than a dial.
+# >>> *** ANSWERED 2026-08-04, round 5: APPROVED AS-IS. *** His words:
+# >>>   "Teklif etdiyiniz formula (Min + diapazonun faizi) alqoritmik baximdan
+# >>>    cox agilli helldir... bu faiz bolgusu (Tier 1 ucun 50% elave ve s.) ela
+# >>>    baslangicdir. Lakin gelecek tenzimlemelerde otaqlarin oz xarakterine
+# >>>    gore... bu duslu bir az daha ferdilesdire bilerik. Helelik bu formul ile
+# >>>    davam etmek tamamile meqbuldur."
+# >>> -- The formula you propose (Min + a percentage of the range) is a very
+# >>> clever solution algorithmically; this percentage split (50% extra for
+# >>> Tier 1 and so on) is an excellent starting point. In future adjustments we
+# >>> could individualise it a little more according to each room's own
+# >>> character. For now, continuing with this formula is entirely acceptable.
+# >>> ==> KEEP f AS A PER-TIER CONSTANT. A per-ROOM-CHARACTER f is his stated
+# >>> FUTURE refinement and is explicitly NOT for now; do not start it here.
 #
 # WHY A RULE AND NOT A SOURCED TABLE. He gave no ideal column, and neither
 # Neufert nor the Posobie supplies one either -- and that is not for want of
@@ -228,9 +283,11 @@ DEFAULT_TIER = 3  # an unlisted room is ancillary until he says otherwise
 # - floor), rounded to 0.25 m2 (the 0.5 m grid's area quantum). It combines the
 # only two pieces of room-type data he has actually given -- the band and the
 # tier -- with one monotone parameter each. f(3) = 0 is HIS WORDING ("kept at
-# minimum"), not a choice. f(1) = 1/2 and f(2) = 1/4 are a halving sequence and
-# they are A GUESS: the ORDER is his, the two numbers are ours, and they are the
-# single question this table should be taken back to him with.
+# minimum"), not a choice. f(1) = 1/2 and f(2) = 1/4 were a halving sequence and
+# a GUESS -- the ORDER his, the two numbers ours. He was asked, and approved both
+# the rule and the two numbers on 2026-08-04 (round 5, quoted above), so they are
+# no longer a guess; what remains open is only his future per-room-character
+# refinement, which he deferred.
 IDEAL_BAND_FRACTION: dict[int, float] = {1: 0.50, 2: 0.25, 3: 0.00}
 
 # Objective/scoring weight per grid CELL (0.25 m2) of deviation from ideal, by

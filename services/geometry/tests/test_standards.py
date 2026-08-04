@@ -56,11 +56,12 @@ def test_every_room_has_a_tier_and_it_is_one_of_his_three():
 
 
 def test_his_named_rooms_are_in_the_tier_he_named_them_in():
-    # Ruling 2, verbatim. These are the only room assignments he actually made;
-    # everything else falls to tier 3 through his own catch-all ("and other
-    # ancillary rooms"), except Dining -- see PRIORITY_TIER's note, which is the
-    # one inference in the table and a question for him.
-    for name in ("Kitchen", "Living", "Master Bedroom"):
+    # Ruling 2, verbatim, plus his round-5 answer on Dining ("metbex ve salon ile
+    # birlikde evin esas sosial ucluyunu teskil edir" -- with the kitchen and the
+    # living room it forms the house's core social trio). Everything he did not
+    # name falls to tier 3 through his own catch-all ("and other ancillary
+    # rooms"). Nothing in this table is an inference any more.
+    for name in ("Kitchen", "Living", "Master Bedroom", "Dining"):
         assert standards.priority_tier(name) == 1, name
     for name in ("Bedroom 2", "Bedroom 3", "Office"):
         assert standards.priority_tier(name) == 2, name
@@ -136,6 +137,34 @@ def test_every_composite_zone_has_a_shape_that_reaches_every_room_ideal():
         # and that shape sits inside the zone's own architect band
         band = slicer.zone_band(zone)
         assert band[0] <= min(zero) <= band[1], (zone, min(zero), band)
+
+
+# ---------------------------------------------------------------------------
+# ARCHITECT RULING 4 (round 5, 2026-08-04): site coverage 45%.
+# ---------------------------------------------------------------------------
+
+
+def test_his_coverage_target_is_reachable_but_not_yet_adopted(roomy_program):
+    # SITE_COVERAGE_TARGET is RECORDED, not yet wired to the brief -- which rung
+    # of the footprint ladder to ship is an open decision (see CLAUDE.md). Two
+    # things must stay true while it is open:
+    #   1. his figure is a legal footprint on this plot at all, and
+    #   2. the shipped brief has not silently drifted ABOVE it.
+    # When the decision lands, this becomes an equality against the same
+    # expression -- there is deliberately no third number to keep in sync.
+    plot = roomy_program.plot.width_m * roomy_program.plot.depth_m
+    his_target = standards.SITE_COVERAGE_TARGET * plot
+    assert his_target <= roomy_program.site.max_coverage_ratio * plot
+    assert roomy_program.footprint_target_m2 <= his_target
+
+
+def test_his_coverage_target_is_a_target_not_the_legal_cap(roomy_program):
+    # Site.max_coverage_ratio is the hard ceiling the plan may not cross; his 45%
+    # is where the house should sit. Conflating the two would let a brief ask for
+    # the whole legal envelope. The gap is real (45% vs 50% = 24 m2 of headroom),
+    # and the cap must stay the looser of the two or it, not fp_dev, becomes the
+    # binder -- see solver.py's fp_dev block for the measurement.
+    assert standards.SITE_COVERAGE_TARGET < roomy_program.site.max_coverage_ratio
 
 
 def test_non_composite_zone_ideal_is_the_rooms_own_ideal():

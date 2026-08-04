@@ -306,7 +306,10 @@ def test_kitchen_direct_fallback_flags_area_limitation(program):
     # 168 is the low end of the two-cell window, chosen for the same reason 160
     # originally was: as far from the kitchen-direct-feasible region as the
     # fixture can go while still producing a plan at all. Not the `program`
-    # fixture (192 m2, where kitchen-direct is feasible and no fallback fires).
+    # fixture (216 m2 since Ruling 4, and 192 when this window was swept -- either
+    # way well inside the region where kitchen-direct is feasible and no fallback
+    # fires; the window above was measured at the old value and is unaffected,
+    # since this test overrides footprint_target_m2 explicitly).
     small = program.model_copy(update={"footprint_target_m2": 168.0})
     g = generate(small, n=2, seeds=[1])
     assert len(g.variants) >= 1, "the fallback must still deliver a plan, not nothing"

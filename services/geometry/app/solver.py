@@ -1511,6 +1511,29 @@ def _solve_once(
     # leaving a real setback; when they cannot (e.g. the example program, whose
     # Neufert-legal zone minima only tile at ~1.15x target) the band's hard
     # upper rail binds instead and the setback is whatever slack remains.
+    #
+    # *** THIS TERM IS THE FOOTPRINT'S ONLY REAL BINDER, and it took the round-5
+    # coverage ruling to establish it (measured 2026-08-04, roomy 20x24 = 1920
+    # cells, footprint_target_m2 = 192 -> house_cells = 768). Three things look
+    # like they cap the house; none of them was doing it:
+    #     FOOTPRINT_HI 1.15      -> fp.area <= 884 cells = 221.00 m2
+    #     max_coverage_ratio 0.5 -> fp.area <= 960 cells = 240.00 m2
+    #     fp_dev                 -> pulls to 768 cells = 192.00 m2, and growth
+    #                               costs 3*plot_cells - 12*100 = 4560 raw/cell
+    # and the solve landed on 201.50 m2, below all three. PROVEN by pinning
+    # fp.area: 805 cells is INFEASIBLE (even with the avoid pairs dropped) and
+    # 806 is OPTIMAL, so 201.50 is the hard PACKING FLOOR; 864 cells (216.00,
+    # his 45%) and 960 cells (240.00, the legal cap) are BOTH already OPTIMAL at
+    # target 192. So the footprint sits at max(packing floor, target) and the
+    # knob is program.footprint_target_m2 -- a BRIEF number -- not either cap.
+    # Raising the brief to 216 is therefore the whole of "raise coverage to 45%".
+    #
+    # The reachable footprints are a coarse LADDER, not a continuum, because the
+    # footprint is one rectangle of integer cells that the zones must tile
+    # EXACTLY: probing every 0.5 m2 from 200.50 to 216.50 gives exactly THREE
+    # feasible values -- 201.50 (26x31 cells), 208.00 (26x32), 216.00 (27x32) --
+    # and nothing in between. That is why brief targets of 200 and 204 produce
+    # 201.50 and 208.00 unchanged: they snap to a rung.
     target_cells_i = int(round(house_cells))
     fp_dev = m.NewIntVar(0, plot_cells, "fp_dev")
     m.Add(fp_dev >= fp.area - target_cells_i)

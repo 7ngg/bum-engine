@@ -138,13 +138,23 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   guesses, per zone not per room type, and rescaled to the footprint by
   reconcile — i.e. Phase 1's deleted adherence term in a new hat.)
 
-  **TWO OPEN QUESTIONS FOR THE ARCHITECT, unresolved on purpose** (flagged in
-  `IDEAL_BAND_FRACTION` and `PRIORITY_TIER`): (a) `f(1)=½` and `f(2)=¼` are
-  OURS — only the tier ORDER is his, and `f(3)=0` is his wording rather than a
-  dial; (b) **Dining's tier** — he named tier 1 "social and living" then listed
-  three rooms, none of them Dining; tier 3 has a catch-all, tiers 1 and 2 do
-  not. Placed in tier 1 by his category. Most consequential open item: Dining
-  holds +7.50 m² above its floor.
+  **BOTH OPEN QUESTIONS ANSWERED (round 5, 2026-08-04).** The two
+  `>>> OPEN QUESTION` markers in `standards.py` are kept and marked ANSWERED
+  rather than deleted, so the reasoning survives beside his answer. (a) **The
+  fractions are approved as-is** — *"bu faiz bolgusu (Tier 1 ucun 50% elave ve
+  s.) ela baslangicdir"*, with per-room-character tuning named as a FUTURE
+  refinement and explicitly deferred: keep `f` per-tier, do not start per-room.
+  (b) **Dining is tier 1, confirmed** — *"metbex ve salon ile birlikde evin esas
+  sosial ucluyunu teskil edir"* (with kitchen and living it forms the house's
+  core social trio). Nothing in `PRIORITY_TIER` is an inference any more.
+
+  **RULING 4 — site coverage 45%** (*"faiz defecesini 45e qaldirin goren ne
+  effekt verecek"*). `SITE_COVERAGE_TARGET = 0.45` × the 480 m² plot = **216 m²**.
+  It is a TARGET, not the legal cap: `Site.max_coverage_ratio` stays `0.5`
+  (240 m²). **RECORDED, NOT YET ADOPTED** — `program_roomy.json` is still at
+  192.0. 216 was built and measured in full (the ladder table under `slicer.py`)
+  and costs two things that are the architect's call to accept; the open decision
+  is which rung ships.
 
   `TIER_W_BELOW`/`TIER_W_ABOVE` are the objective weights, consumed by
   **both** `solver.py` and `slicer._cut_score` so the zone-level and room-level
@@ -162,6 +172,27 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   hardcoded here. Production solves use `workers=8` (fast, ~0.1s, but
   **nondeterministic** — search runs a portfolio across threads); anything
   needing reproducibility (tests, the golden file) must pass `workers=1`.
+
+  **THE FOOTPRINT'S ONLY REAL BINDER IS `fp_dev`, i.e. the BRIEF's
+  `footprint_target_m2` — not either coverage cap** (measured 2026-08-04 for
+  Ruling 4; the full derivation sits in `solver.py`'s `fp_dev` block). Three
+  things look like they cap the house at `footprint_target_m2 = 192` on the
+  480 m² plot: `FOOTPRINT_HI` (884 cells = 221.00 m²), `max_coverage_ratio`
+  (960 = 240.00 m²), and `fp_dev`'s pull to 768 = 192.00 m² at a net
+  `3·plot_cells − 12·100 = 4560` raw per cell of growth. The solve landed on
+  **201.50**, below all three. Pinning `fp.area` proves why: **805 cells is
+  INFEASIBLE and 806 is OPTIMAL**, so 201.50 is the hard **packing floor**;
+  **864 (216.00, his 45%) and 960 (240.00, the legal cap) are BOTH already
+  OPTIMAL at target 192**. The footprint therefore sits at
+  `max(packing floor, target)`, and the knob is the brief.
+
+  **The reachable footprints are a LADDER, not a continuum.** The footprint is
+  one integer-cell rectangle the zones must tile EXACTLY, so probing every
+  0.5 m² from 200.50 to 216.50 gives exactly three feasible values —
+  **201.50 (26×31 cells), 208.00 (26×32), 216.00 (27×32)** — and nothing
+  between. Brief targets of 200 and 204 produce 201.50 and 208.00 unchanged:
+  they snap to a rung. Ship-relevant consequence: there are three choices, not a
+  dial.
 - **`presets.py`** — `PRESETS = ["gW_eN","gW_eW","gE_eN","gE_eW"]` (garage
   west/east × entry north/west). `resolve(name)` turns a preset name into the
   per-zone `Pins` the solver applies. This is the axis `generate.py` fans out
@@ -228,13 +259,74 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   (kitchen_laundry at 18.00 m² gives Kitchen 10.00 / Laundry 8.00 at 4.5 × 4.0
   but Kitchen 12.00 / Laundry 6.00 at 6.0 × 3.0), which is why the term is
   tabulated per shape — but at 201.50 m² the packing does not offer the second
-  shape either. Buying tier-1 area therefore costs **footprint**: measured,
-  201.50 → 208.00 m² (42.0% → 43.3% site coverage) moves Master Bedroom
-  16.50 → 19.25, Living 29.25 → 31.50, Office 12.00 → 13.50 — and the Kitchen
-  still does not move until 216.00 m². **That trades away the architect's own
-  ~40% coverage figure from round 3 to satisfy round 4, and is his call, not
-  ours.** Same wall as the arrangement count, same open path: **footprint shape
-  (L, U)**.
+  shape either. Buying tier-1 area therefore costs **footprint**, and that call
+  went back to the architect: **he took it, and answered 45%** (Ruling 4).
+
+  **THE FOOTPRINT LADDER, MEASURED (2026-08-04, roomy, both feasible presets,
+  workers=1, seed=1, avoid never dropped, all OPTIMAL, `validate().ok` on every
+  rung, void 0.00, all four edges covered, all 16 rooms in band).** Only three
+  footprints exist between 200.50 and 216.50 — see the `solver.py` bullet:
+
+  | | **201.50** (41.98%) | **208.00** (43.33%) | **216.00** (45.00%) |
+  |---|---|---|---|
+  | Living *(t1, ideal 32.50)* | 29.25 | 31.50 | **35.00** ✅ (+2.50 over) |
+  | Dining *(t1, ideal 18.50)* | 19.50 ✅ | 19.50 ✅ | 19.50 ✅ |
+  | Master Bedroom *(t1, ideal 23.00)* | 16.50 | 19.25 | 19.25 |
+  | Kitchen *(t1, ideal 16.00)* | 10.00 = floor | 10.00 = floor | **12.00** |
+  | Office *(t2, ideal 12.50)* | 12.00 | 13.50 ✅ | 13.50 ✅ |
+  | Bedroom 2 / 3 *(t2, ideal 14.00)* | 12.00 = floor | 12.00 = floor | 12.00 = floor |
+  | **Garage** *(t3, ideal 29.25, ceil 40)* | 37.50 | 37.50 | **40.00 = ceiling** |
+  | every other tier-3 room | — | unchanged | unchanged |
+  | tier-1 shortfall (Σ m² below ideal) | 15.75 | 10.75 | 7.75 |
+  | tier-3 excess (Σ m² above ideal) | 29.11 | 29.11 | **31.61** |
+  | terrace / footprint+terrace | 22.5 / 224.00 | 22.5 / 230.50 | 24.0 / **240.00 = the 50% legal cap** |
+  | objective | 477.99427 | 625.41094 | 651.86927 |
+
+  **THE NUMBER THAT DECIDES IT — tier-1 m² of shortfall closed per m² of
+  footprint bought: 0.77 for the first rung, 0.375 for the second.**
+  201.50 → 208.00 spends +6.50 m² and closes 5.00 of tier-1 shortfall with
+  **zero** tier-3 inflation. 208.00 → 216.00 spends +8.00 m² and closes only
+  3.00: of the other 5.00, half overshoots Living *past* its ideal and half
+  inflates the Garage to its ceiling. What 216 alone buys is the **Kitchen
+  leaving its floor for the first time on any lever ever tried** (10.00 → 12.00,
+  still 4.00 short of ideal), which is the room Ruling 2 names first.
+
+  **THE GARAGE LEAK IS THE WEIGHTS, NOT THE CAP — and capping it makes things
+  worse.** At 216 the Garage takes +2.50 to its 40.00 ceiling. That is *chosen*,
+  not packing-forced: hold its architect ceiling at 37.50 and the solve is still
+  OPTIMAL at 216.00 — but the 2.50 goes to the **Corridor (12.00 → 16.00)** and
+  the Kitchen falls back to 10.00. Below a 35.00 garage ceiling, 216.00 is
+  INFEASIBLE. So the surplus lands on tier 3 either way; `TIER_W_ABOVE[3] = 160`
+  per cell is simply too cheap next to what the packing wants. Naming it, not
+  fixing it: raising the weights is the lever that was explicitly ruled out
+  (it inflates the footprint instead of redistributing it).
+
+  **216 ALSO KILLS A NEGATIVE CONTROL, WHICH IS WHY IT IS NOT SHIPPED.**
+  `test_solver.py::test_children_bathroom_direct_needs_center_cover` guards
+  `_force_vertical_cover_center` by checking that switching it OFF strands the
+  children Bathroom. Measured on gW_eW, seed 1, workers=1, **all four arms
+  OPTIMAL at `time_limit_s=240`** (so this is not the load canary): at **192**
+  cover OFF gives Corridor↔Bathroom 0.50 m / not direct, ON gives 2.00 m /
+  direct — discriminating. At **208**, identical — still discriminating. At
+  **216**, cover OFF *already* gives 2.00 m / direct: the packing satisfies the
+  property by coincidence again and the control is **dead**. It was un-xfailed
+  one commit ago (9398909) for exactly the opposite reason. Shipping 216 means
+  either losing that guard or returning it to strict-xfail.
+
+  Solve time also grows with the rung — `generate(n=4)` measured 81.9 s / 110.1 s
+  / 119.7 s at 192 / 208 / 216 in one session. Note the *baseline* is already
+  over `test_generation_under_time_budget`'s 60 s ceiling on a 4-core box under
+  ~30% background load, so that failure is the documented canary, not the
+  footprint; the footprint only makes an already-marginal test worse.
+
+  **WHAT STOPS THE KITCHEN AT 12.00 IS NOW COMPOSITE, NOT AREA.** At 216 the
+  zone-level `ideal_short` term is **exactly 0** — every non-composite zone has
+  reached its ideal. The entire remaining tier-1 shortfall (Kitchen −4.00,
+  Master Bedroom −3.75) lives inside composite zones and is carried by
+  `cut_penalty` (30.995 human: `kitchen_laundry` 21760, `master_suite` 20880,
+  `children` 15309, `entry` 1562 raw). More footprint cannot reach it; a
+  different composite SHAPE could. Same wall as the arrangement count, same open
+  path: **footprint shape (L, U)**.
 
   **ARCHITECT RULING 3 — corridor proportion (round 4, 2026-08-04). RECORDED,
   NOT IMPLEMENTED.** He caps a corridor at 3:1 or 4:1; at a 1.5 m width that is
@@ -246,6 +338,14 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   both configurations achieving it fail the bedroom-privacy check. The
   distribution work does **not** move it on its own (corridor unchanged at
   1.5 × 8.0 before and after). Needs its own round.
+
+  **AND MORE AREA DOES NOT MOVE IT EITHER (measured 2026-08-04).** The corridor
+  is **1.5 × 8.0 = 12.00 m², 5.33:1 on every rung of the ladder** — 201.50,
+  208.00 and 216.00 alike, both presets. It neither improves nor degrades with
+  the house: `zones.corridor_target_m2` does grow with the brief (9.5 → 10.1 m²
+  across the ladder) but the packing puts the surplus elsewhere. The one
+  configuration seen with a bigger corridor is the artificial garage-capped
+  probe above (16.00 m², i.e. *worse*). Ruling 3 still needs its own round.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not
@@ -260,15 +360,19 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   dropped rather than returned as filler. Only validator-passing variants ever
   leave this function.
 
-  **Exactly ONE valid arrangement exists on the rectangle model** at roomy @192,
+  **Exactly ONE valid arrangement exists on the rectangle model** at roomy,
   in two handednesses (`gW_eN` and its mirror `gE_eN`; `gE_eW` reproduces the
   latter byte for byte, and all four default seeds reproduce the same optimum
   because the solve proves OPTIMAL). `Variant.arrangement` marks which
   arrangement each returned plan is — variants sharing an id are the same house
   flipped, and the UI must say "same layout, two orientations" rather than
-  implying two designs. Five levers were each measured and exhausted (objective
-  reweighting, coverage slack, pin relaxation, the 128-configuration pin sweep,
-  the architect's kitchen ruling); **footprint shape (L, U) is the open path**.
+  implying two designs. **Six** levers have now each been measured and exhausted
+  (objective reweighting, coverage slack, pin relaxation, the 128-configuration
+  pin sweep, the architect's kitchen ruling, and — round 5 — **more area**:
+  `generate(n=4)` returns 2 variants / **1 arrangement** at 201.50, 208.00 *and*
+  216.00 alike, and seeds 1–5 reproduce one identical plan per preset on every
+  rung). More slack was the diversity work's own hypothesis for what was
+  missing; it is now falsified. **Footprint shape (L, U) is the open path.**
   See `tests/test_generate.py::test_at_least_three_distinct_arrangements`, a
   strict xfail carrying the full evidence.
 - **`schema_io.py`** — deliberately validates twice: pydantic models
@@ -340,6 +444,16 @@ nginx also proxies `/api` directly to `api`, per `docker/nginx.conf`).
   names/rects/counts) in `tests/golden/gW_eN_seed1.json`. A failure means the
   layout drifted — inspect the diff and regenerate the golden file only if
   the drift is intended (delete it and rerun to have it recreate itself).
+- **`data/program_roomy.json` is the primary fixture; its `footprint_target_m2`
+  is 192.0 and is THE knob for house size** (see the `solver.py` bullet — it is
+  the footprint's only real binder). The architect's Ruling 4 would put it at
+  216.0; that is measured but not adopted, and
+  `test_standards.py::test_his_coverage_target_is_reachable_but_not_yet_adopted`
+  holds the invariant while the rung decision is open (`≤ SITE_COVERAGE_TARGET ×
+  plot`, becoming `==` when it lands). `data/program.example.json` is a SEPARATE
+  brief at 184.0 — the frozen demo/back-compat artefact paired with
+  `layout.example.json`; moving it would churn the schema-versioning tests for no
+  architectural reason.
 - `services/geometry/data/program.example.json` / `layout.example.json` are the
   fixed demo brief/output (the roomy 20x24 program; the retired tight 16x12
   brief lives on as `program_illegal_example.json` for the infeasibility test).

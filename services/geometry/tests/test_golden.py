@@ -117,12 +117,63 @@ GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 # and 534.65625 - 56.66197916666667 = 477.9942708333333, the solver's reported
 # value. Terms sum; nothing is unexplained.
 #
-# WHAT IT MEANS THAT NOTHING MOVED. It is not that the term is too weak. At this
-# footprint the packing has no degrees of freedom left: pinning fp.area to
+# WHAT IT MEANT THAT NOTHING MOVED. It is not that the term is too weak. At that
+# footprint the packing had no degrees of freedom left: pinning fp.area to
 # exactly 201.50 m2 and raising standards.TIER_W_BELOW 333x (to 400000, i.e.
 # dominating even the 76800-per-bool adjacency rewards) still returns the
 # IDENTICAL zone vector, OPTIMAL, on both feasible presets. The room areas at
-# roomy @192 are decided by the hard constraints, not by any objective.
+# roomy @192 were decided by the hard constraints, not by any objective.
+#
+# WHAT RULING 4 (site coverage 45%) WOULD DO TO THIS NUMBER -- MEASURED
+# 2026-08-04, RECORDED, **NOT APPLIED**. Raising program_roomy.json's
+# footprint_target_m2 192.0 -> 216.0 moves EXPECTED_OBJECTIVE
+# 477.99427083333336 -> 651.8692708333333 and the footprint 201.50 -> 216.00 m2
+# (41.98% -> 45.00% site coverage), void still 0.00, coverage 1.0000, all 16
+# rooms still inside their architect bands, counts unchanged (16 rooms, 48
+# walls, 18 doors, 9 windows), six rooms grow and ten do not: Living +5.75,
+# Master Bedroom +2.75, Garage +2.50, Kitchen +2.00 (its FIRST move off its
+# 10.00 floor on any lever tried), Office +1.50.
+#
+# The fixture is NOT at 216 because that arm kills a negative control --
+# test_solver.py::test_children_bathroom_direct_needs_center_cover, which at 216
+# finds the gW_eW Bathroom corridor-direct even with the constraint OFF (proven
+# at OPTIMAL, time_limit_s=240, not a load artefact) -- and because the Garage
+# inflates to its 40.00 ceiling. Which rung to ship is an open decision; see
+# CLAUDE.md's footprint-ladder table. Everything below is the verification that
+# was done for that arm, kept so the re-baseline is a one-line change when the
+# decision lands. The ten term deltas sum exactly to the +173.875 swing:
+#     coverage fill      +36.25000   the house is 58 cells bigger and still
+#                                    tiled exactly (12*100 per cell)
+#     footprint dev     +114.00000   THE DOMINANT TERM: 201.50 sat 38 cells off
+#                                    the old 192 target and paid 3*1920 each;
+#                                    216.00 is exactly on the new target, so
+#                                    fp_dev goes 38 -> 0
+#     service northness   +4.00000   service zones sit further north in the
+#                                    taller footprint
+#     cut penalty        +11.87500   kitchen_laundry 31360 -> 21760 (Kitchen
+#                                    10.00 -> 12.00, off its floor for the first
+#                                    time) and master_suite 34080 -> 20880
+#                                    (Master Bedroom 16.50 -> 19.25)
+#     ideal shortfall     +8.95833   living 13 cells short -> 0, office 2 -> 0;
+#                                    every NON-composite zone reaches its ideal
+#     ideal overshoot     -1.20834   garage 33 -> 43 cells over (37.50 -> 40.00,
+#                                    its ceiling) and living 0 -> 10 over
+#     desirable/semi      +0.00000   adjacencies did not move (2 met -> 2 met)
+#     public non-south    +0.00000
+#     soft brief minima   +0.00000
+#     ------------------------------
+#     total             +173.87500
+# Reconstructed at 216, plot_cells = 1920, raw units: coverage 1036800, fp_dev 0,
+# desirable 153600, semi 0, public non-south -5760, service northness 138240,
+# soft minima -180, cut penalty -59511 (kitchen_laundry 21760, master_suite
+# 20880, children 15309, entry 1562), ideal shortfall 0, ideal overshoot -11600
+# (garage 6880, circulation 3840, office 320, living 400, dining 160)
+# = 1251589 / 1920 = 651.8692708333333, the solver's reported value.
+#
+# NOTE ON time_limit_s=12 BELOW: at 216 that solve proves OPTIMAL in ~5 s on an
+# idle machine, but it returns FEASIBLE (and a different packing) if anything
+# else is using the CPU -- e.g. a second pytest run. That is the load-canary
+# behaviour CLAUDE.md documents, not a drift; run the suite alone.
 EXPECTED_OBJECTIVE = 477.99427083333336
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
