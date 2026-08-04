@@ -121,6 +121,69 @@ def _in_band(name: str, rect: geom.Rect) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# THE ARCHITECT'S DISTRIBUTION PRIORITY, applied to the composite CUT
+# (round 4, 2026-08-04 -- rulings quoted verbatim in standards.py).
+#
+# THIS IS WHERE THE MEASURED DEFECT LIVED. Every composite cutter below
+# enumerates grid-legal candidate cuts in ascending order of the ANCILLARY
+# room's strip depth and returns THE FIRST one that is in band. That rule reads
+# as "give the headline room the surplus" and it is the opposite in practice,
+# because the ancillary strip spans the zone's whole CROSS-dimension: its area
+# is (its own minimum depth) x (the zone's width), which grows with the zone,
+# while the headline room gets only what is left. Measured at roomy @192:
+#   kitchen_laundry 18.00 -> Kitchen 10.00 (= its floor, +0.00), Laundry +4.00
+#   children        32.00 -> Bedroom 2/3 12.00 (= floor, +0.00), Bathroom +3.92
+#   master_suite    30.25 -> Master Bedroom +0.50, Walk-in Closet +3.30
+#
+# So the fix is not a new constraint: every one of those cuts was already legal
+# and so were better ones. It is that FIRST-LEGAL-WINS is not a decision rule.
+# _cut_score replaces it with the architect's own rule -- score every legal
+# candidate by tier-weighted distance from ideal, keep the best -- and because
+# it only ever CHOOSES AMONG CUTS THE OLD CODE ALREADY ACCEPTED, it cannot make
+# a legal shape illegal, cannot change legal_pairs (which probes these same
+# functions), and cannot break a hard constraint.
+#
+# Ordering note: the enumeration order of each cutter is preserved and used as
+# the tie-break (`min` keeps the first minimum), so a zone whose candidates all
+# score equally slices exactly as it did before, byte for byte.
+# ---------------------------------------------------------------------------
+
+
+def _cut_score(rects: list[tuple[str, geom.Rect]]) -> tuple[int, int]:
+    """(weighted shortfall, weighted excess) for a candidate cut, in the units
+    solver.py's objective uses -- grid cells (0.25 m2), weighted by
+    standards.TIER_W_BELOW / TIER_W_ABOVE. Lower is better, shortfall first.
+
+    Two keys rather than one signed number, and the order matters: the first is
+    Ruling 2 (surplus goes to the highest tier still short of its ideal), the
+    second is Ruling 1's "ideal olcuye catdiqdan sonra sistem dayanmalidir" --
+    among cuts that leave nobody short, prefer the one that overshoots least.
+    Both are computed over the SAME per-room-type constants the solver uses, so
+    the zone-level term and the room-level cut cannot disagree about priority.
+    """
+    below = above = 0.0
+    for name, rect in rects:
+        x0, y0, x1, y1 = rect
+        cells = ((x1 - x0) * (y1 - y0)) / (GRID_M * GRID_M)
+        ideal_cells = standards.area_ideal(name) / (GRID_M * GRID_M)
+        tier = standards.priority_tier(name)
+        if cells < ideal_cells:
+            below += standards.TIER_W_BELOW[tier] * (ideal_cells - cells)
+        else:
+            above += standards.TIER_W_ABOVE[tier] * (cells - ideal_cells)
+    return (int(round(below)), int(round(above)))
+
+
+def _best_cut(cands: list[list[FinalRoom]]) -> list[FinalRoom] | None:
+    """The candidate whose rooms sit closest to their ideals, by _cut_score.
+    `min` is stable, so an exact tie keeps the earliest candidate -- i.e. the
+    one the previous first-legal-wins rule would have returned."""
+    if not cands:
+        return None
+    return min(cands, key=lambda rooms: _cut_score([(r.name, r.rect) for r in rooms]))
+
+
 def _side_of(r: geom.Rect, other: geom.Rect) -> str:
     """Which side of r the other rect lies on: 'N','S','E','W'."""
     e = geom.shared_edge(r, other)
@@ -167,8 +230,16 @@ def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRo
     # that puts ALL THREE rooms inside their bands wins. Ascending order also
     # handles the opposite failure by itself: if the smallest strip leaves the
     # Bedroom ABOVE its 30 m2 ceiling, a deeper strip is tried until it isn't.
+    #
+    # RULING 1/2 (2026-08-04): "smallest strip first" was still only a heuristic
+    # about the strip's DEPTH, and it never looked at the strip's WIDTH split at
+    # all -- bath_w ascending handed the Walk-in Closet every metre the Master
+    # Bathroom did not claim, which is how a tier-3 closet came out +3.30 while
+    # the tier-1 Bedroom took +0.50. Every candidate is now collected and scored
+    # by _cut_score instead of the first one being returned.
     service_lo = max(mbath.min_h_m, wic.min_h_m)
     bath_lo = mbath.min_w_m
+    cands: list[list[FinalRoom]] = []
     for service in _grid_steps(service_lo, h - _ceil_snap(mbed.min_h_m)):
         for bath_w in _grid_steps(bath_lo, w - _ceil_snap(wic.min_w_m)):
             bed_rect = ((x0, y0, x1, y1 - service) if corridor_side != "N"
@@ -180,16 +251,20 @@ def _slice_master(r: ZoneRect, corridor_side: str | None = None) -> list[FinalRo
                 and _in_band("Walk-in Closet", (x0 + bath_w, sy0, x1, sy1))
             ):
                 if corridor_side == "N":
-                    return [
+                    cands.append([
                         FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy0, x0 + bath_w, sy1)),
                         FinalRoom("Walk-in Closet", "private", r.zone, (x0 + bath_w, sy0, x1, sy1)),
                         FinalRoom("Master Bedroom", "private", r.zone, bed_rect),
-                    ]
-                return [
-                    FinalRoom("Master Bedroom", "private", r.zone, bed_rect),
-                    FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy0, x0 + bath_w, sy1)),
-                    FinalRoom("Walk-in Closet", "private", r.zone, (x0 + bath_w, sy0, x1, sy1)),
-                ]
+                    ])
+                else:
+                    cands.append([
+                        FinalRoom("Master Bedroom", "private", r.zone, bed_rect),
+                        FinalRoom("Master Bathroom", "wet", r.zone, (x0, sy0, x0 + bath_w, sy1)),
+                        FinalRoom("Walk-in Closet", "private", r.zone, (x0 + bath_w, sy0, x1, sy1)),
+                    ])
+    best = _best_cut(cands)
+    if best is not None:
+        return best
     # No grid-legal three-way cut. Fall back to the whole zone as one Bedroom,
     # exactly as before — legal_pairs() probes this function, so the solver is
     # not offered a shape that lands here in the first place.
@@ -235,6 +310,13 @@ def _slice_children(r: ZoneRect, corridor_side: str | None = None) -> list[Final
     # Bathroom's own min_h_m — which is why that number is now sourced rather
     # than derived. At 1.7 -> 2.0 m snapped, widths up to 4.0 m clear the 9 m2
     # ceiling (4.0 x 2.0 = 8.0) and the aspect cap binds before the band does.
+    #
+    # RULING 1/2 (2026-08-04): the Bathroom band's depth is now chosen by
+    # _cut_score over all legal candidates rather than by taking the shallowest,
+    # so a tier-3 Bathroom stops absorbing depth the tier-2 beds are short of.
+    # The even-split preference below is kept as the enumeration order, which is
+    # also the tie-break, so an all-equal zone slices exactly as it did before.
+    out: list[list[FinalRoom]] = []
     for bath_h in _grid_steps(bathroom.min_h_m, h - 2 * _ceil_snap(bed.min_h_m)):
         rest = h - bath_h
         # Prefer the most even split (the two beds share a minimum), then walk
@@ -251,11 +333,14 @@ def _slice_children(r: ZoneRect, corridor_side: str | None = None) -> list[Final
                 and _in_band("Bathroom", (x0, a, x1, b))
                 and _in_band("Bedroom 3", (x0, b, x1, y1))
             ):
-                return [
+                out.append([
                     FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, x1, a)),
                     FinalRoom("Bathroom", "wet", r.zone, (x0, a, x1, b)),
                     FinalRoom("Bedroom 3", "private", r.zone, (x0, b, x1, y1)),
-                ]
+                ])
+    best = _best_cut(out)
+    if best is not None:
+        return best
     return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
 
@@ -301,6 +386,7 @@ def _slice_children_ns(r: ZoneRect) -> list[FinalRoom]:
     # The Bathroom's band WIDTH is its depth-in-front (min_h_m), because its
     # fixture run lies along the zone's depth here -- the mirror of the E/W
     # branch, where the band's depth was min_h_m and the run lay along the width.
+    out: list[list[FinalRoom]] = []
     for bath_w in _grid_steps(bathroom.min_h_m, w - 2 * _ceil_snap(bed.min_w_m)):
         rest = w - bath_w
         mid = _snap(rest / 2)
@@ -315,11 +401,14 @@ def _slice_children_ns(r: ZoneRect) -> list[FinalRoom]:
                 and bath_ok((a, y0, b, y1))
                 and _in_band("Bedroom 3", (b, y0, x1, y1))
             ):
-                return [
+                out.append([
                     FinalRoom("Bedroom 2", "private", r.zone, (x0, y0, a, y1)),
                     FinalRoom("Bathroom", "wet", r.zone, (a, y0, b, y1)),
                     FinalRoom("Bedroom 3", "private", r.zone, (b, y0, x1, y1)),
-                ]
+                ])
+    best = _best_cut(out)  # Ruling 1/2, as in _slice_children
+    if best is not None:
+        return best
     return [FinalRoom("Children Bedroom", "private", r.zone, (x0, y0, x1, y1))]
 
 
@@ -359,6 +448,14 @@ def _slice_kitchen(
     # Laundry's own 4-10 m2 band is respected on both ends. Ascending order means
     # a Laundry over its 10 m2 ceiling never survives — it is the first candidate
     # to be rejected, and the search moves on rather than shipping it.
+    #
+    # RULING 1/2 (2026-08-04). "Smallest strip first, Kitchen takes the surplus"
+    # was true of the strip's DEPTH and false of its AREA: the strip spans the
+    # zone's full cross-dimension, so the Laundry's minimum-depth candidate was
+    # already 2.0 x 4.0 = 8.00 m2 against its own 4 m2 floor while the Kitchen
+    # sat on exactly 10.00. This is the single clearest instance of the defect
+    # Ruling 2 names. All legal depths are now scored by _cut_score.
+    out: list[list[FinalRoom]] = []
     if axis_ns:
         for depth in _grid_steps(laundry.min_h_m, h - _ceil_snap(kitchen.min_h_m)):
             if place_side == "S":  # kitchen south, laundry north
@@ -368,7 +465,10 @@ def _slice_kitchen(
             if _in_band("Kitchen", k_rect) and _in_band("Laundry", l_rect):
                 k = FinalRoom("Kitchen", "wet", r.zone, k_rect)
                 lr = FinalRoom("Laundry", "service", r.zone, l_rect)
-                return [k, lr] if place_side == "S" else [lr, k]
+                out.append([k, lr] if place_side == "S" else [lr, k])
+        best = _best_cut(out)
+        if best is not None:
+            return best
         return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
     for depth in _grid_steps(laundry.min_w_m, w - _ceil_snap(kitchen.min_w_m)):
         if place_side == "W":  # kitchen west, laundry east
@@ -378,7 +478,10 @@ def _slice_kitchen(
         if _in_band("Kitchen", k_rect) and _in_band("Laundry", l_rect):
             k = FinalRoom("Kitchen", "wet", r.zone, k_rect)
             lr = FinalRoom("Laundry", "service", r.zone, l_rect)
-            return [k, lr] if place_side == "W" else [lr, k]
+            out.append([k, lr] if place_side == "W" else [lr, k])
+    best = _best_cut(out)
+    if best is not None:
+        return best
     return [FinalRoom("Kitchen", "wet", r.zone, (x0, y0, x1, y1))]
 
 
@@ -445,14 +548,19 @@ def _split_off_wc(
                 mk = lambda d: ((x0, y1 - d, x1, y1), (x0, y0, x1, y1 - d))
             else:
                 mk = lambda d: ((x0, y0, x1, y0 + d), (x0, y0 + d, x1, y1))
+        # RULING 1/2 (2026-08-04): both sub-rooms here are tier 3, so this scorer
+        # only ever expresses "overshoot least" (Ruling 1's stop-at-ideal) and
+        # never reprioritises anything -- but it goes through the same
+        # _cut_score as the other three cutters so the rule lives in one place.
+        out: list[list[FinalRoom]] = []
         for depth in steps:
             wc_rect, foy_rect = mk(depth)
             if _in_band("Guest WC", wc_rect) and _in_band("Foyer", foy_rect):
                 wc_room = FinalRoom("Guest WC", "wet", zone, wc_rect)
                 foy_room = FinalRoom("Foyer", "circ", zone, foy_rect)
                 lo_first = (wc_rect[0], wc_rect[1]) < (foy_rect[0], foy_rect[1])
-                return [wc_room, foy_room] if lo_first else [foy_room, wc_room]
-        return None
+                out.append([wc_room, foy_room] if lo_first else [foy_room, wc_room])
+        return _best_cut(out)
 
     # `along_x` is the PREFERRED axis (it is the one whose end-choice reasoning
     # is documented above), but the other axis is tried as a fallback rather than
@@ -832,6 +940,96 @@ def zone_band(zone_id: str) -> tuple[float, float] | None:
     if members and all(b is not None for b in bands):
         out = (round(sum(b[0] for b in bands), 4), round(sum(b[1] for b in bands), 4))
     _BAND_CACHE[zone_id] = out
+    return out
+
+
+_PENALTY_CACHE: dict[str, object] = {}
+
+
+def cut_penalty_pairs(zone_id: str):
+    """legal_pairs(zone_id) with ONE EXTRA COLUMN: the tier-weighted penalty
+    (_cut_score) of the best legal cut at that shape. None for non-composites.
+
+    This is what lets the solver optimise the architect's Ruling 1/2 EXACTLY
+    rather than through a proxy. A zone-AREA target cannot express what he asked
+    for, and it is the ancillary band that makes the difference: the Laundry
+    spans the zone's whole cross-dimension at its own grid-snapped 2.0 m minimum
+    width, so its area is 2.0 x (the zone's other side) and the Kitchen gets only
+    the remainder. The zone's SHAPE therefore decides the split, at a FIXED area.
+    Measured on the real table, kitchen_laundry at 18.00 m2:
+
+        4.5 x 4.0  ->  Kitchen 10.00 (its floor), Laundry 8.00   penalty 31360
+        6.0 x 3.0  ->  Kitchen 12.00,             Laundry 6.00   penalty 20480
+
+    Same 18.00 m2, same zone, 10880 of penalty between them and the plan already
+    on the worse one. An area target scores those two identically; this table
+    does not. (At 22.50 m2 the spread is wider still: 4.5 x 5.0 gives Kitchen
+    12.50 / Laundry 10.00 at penalty 20640, while 7.5 x 3.0 gives Kitchen 16.50 /
+    Laundry 6.00 at penalty 1360 -- both rooms at or past ideal.)
+
+    The solver already pins each composite zone's (w, h) to legal_pairs with
+    AddAllowedAssignments, so the penalty rides along as one more column of that
+    same table and enters the objective directly. No approximation: the number
+    the solver minimises is the real room-level shortfall of the cut the slicer
+    will actually perform.
+
+    The axial zones (kitchen_laundry, entry, and children under _CHILD_AXIAL)
+    are probed on the axis's REPRESENTATIVE side, exactly as legal_pairs is. That
+    is exact for this purpose and not merely consistent: the other side of an
+    axis is the same cut mirrored (_slice_kitchen's place_side, _slice_master's
+    "N" flip, _split_off_wc's mud_side all swap WHICH END a band takes, never its
+    size), so every candidate's room AREAS are identical on both sides."""
+    if zone_id in _PENALTY_CACHE:
+        return _PENALTY_CACHE[zone_id]
+    pairs = legal_pairs(zone_id)
+    out = None
+    if pairs:
+        out = []
+        for t in pairs:
+            wu, hu = t[0], t[1]
+            side = (_NS_REP if t[2] else _WE_REP) if len(t) == 3 else None
+            rooms = _slice_probe(zone_id, wu * GRID_M, hu * GRID_M, side)
+            below, above = _cut_score([(r.name, r.rect) for r in rooms])
+            out.append((*t, below + above))
+    _PENALTY_CACHE[zone_id] = out
+    return out
+
+
+_IDEAL_CACHE: dict[str, object] = {}
+
+
+def zone_ideal(zone_id: str) -> float | None:
+    """The ideal AREA for a NON-COMPOSITE solver zone -- the architect's Ruling 1
+    lifted from the room to the zone the solver actually places -- or None for a
+    composite zone and for any zone with no architect band.
+
+    None for composites ON PURPOSE, and it is not a gap: a composite's ideal
+    cannot honestly be stated as an area at all, because its split is decided by
+    the zone's SHAPE (the ancillary band spans the whole cross-dimension, so two
+    shapes of equal area cut completely differently -- see cut_penalty_pairs for
+    the measured 18.00 m2 example). Composites are scored per shape by
+    cut_penalty_pairs instead, which is exact where an area target would be a
+    proxy. A non-composite zone IS one room, so for those the area is the room's
+    area and this is exact too.
+
+    Clamped into the zone's own realisable window -- the grid-snapped shape floor
+    below, the architect's ceiling above. That clamp is what keeps this safe to
+    put in the objective where Phase 1's adherence term was not: a target the
+    zone cannot reach is a penalty no solution can avoid, i.e. a constant with a
+    weight on it rather than a preference."""
+    if zone_id in _IDEAL_CACHE:
+        return _IDEAL_CACHE[zone_id]
+    out: float | None = None
+    room = _ZONE_ROOM.get(zone_id)
+    if room is not None:
+        band = standards.architect_band(room)
+        if band is not None:
+            spec = standards.ROOMS.get(room)
+            floor = standards.area_floor(room)
+            if spec is not None:
+                floor = max(floor, _ceil_snap(spec.min_w_m) * _ceil_snap(spec.min_h_m))
+            out = min(max(standards.area_ideal(room), floor), band[1])
+    _IDEAL_CACHE[zone_id] = out
     return out
 
 

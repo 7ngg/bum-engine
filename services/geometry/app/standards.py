@@ -103,6 +103,166 @@ ARCHITECT_AREA_BANDS: dict[str, tuple[float, float]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# THE ARCHITECT'S THREE-VALUE MODEL AND DISTRIBUTION PRIORITY (round 4,
+# 2026-08-04). Both rulings are quoted VERBATIM so nobody re-litigates them from
+# a paraphrase, and the translation follows each quote.
+#
+# RULING 1 -- three values, not two:
+#   "Eger sisteme yalniz Min ve Max verilse, alqoritm riyazi olaraq otaqlari ya
+#    tam minimumda saxlayacaq (ev sixilacaq), ya da tesadufi olaraq maksimuma
+#    qeder sisirdecek. Her otaq ucun Minimum, Ideal (Optimal) ve Maksimum
+#    deyerler teyin etmekdir. Alqoritm elave sahani bolusdurende hedefi hemise
+#    'Ideal saha' gostericisine catdirmaq olmalidir. Ideal olcuye catdiqdan
+#    sonra sistem dayanmalidir."
+#   -- Given only a Min and a Max the algorithm will mathematically either hold
+#   every room at its exact minimum (the house shrinks) or inflate it at random
+#   up to the maximum. Each room needs a Minimum, an IDEAL (optimum) and a
+#   Maximum. When the algorithm distributes surplus area its goal must always be
+#   to bring the room up to its ideal area. Once the ideal size is reached the
+#   system must stop.
+#
+# RULING 2 -- distribution priority by room type:
+#   "Sistemin butun artigi tekce komekci otaga vermesi menteqsizdir... otaq
+#    novune gore prioritet sirasi."
+#   -- It is illogical for the system to hand the entire surplus to the
+#   auxiliary room alone; there must be a priority order by room type.
+#     Tier 1 (social and living): Kitchen, Living Room, Master Bedroom -- expand
+#       these first, because people spend most of the day there.
+#     Tier 2 (private): children's bedrooms, office.
+#     Tier 3 (kept at minimum): Laundry, Walk-in Closet, and other ancillary
+#       rooms.
+#
+# MEASURED BEHAVIOUR BEFORE THIS COMMIT was the EXACT INVERSE of Ruling 2, in
+# all three composite zones (roomy @192, gW_eN and gE_eN, workers=1, seed=1):
+# Kitchen sat at its 10.00 floor while the Laundry took +4.00; Bedroom 2 and 3
+# sat at 12.00 while the Bathroom took +3.92; the Master Bedroom took +0.50
+# while the Walk-in Closet took +3.30. The coverage term is indifferent about
+# WHICH room grows, so the composite cut decided -- and it decided by taking the
+# first grid-legal candidate, which is the one that pins the ancillary strip to
+# its own minimum DEPTH and hands it the zone's whole cross-dimension.
+#
+# RULING 3 -- corridor proportion -- is NOT implemented here and is deliberately
+# out of scope for this commit; it is recorded in CLAUDE.md with its numbers.
+# ---------------------------------------------------------------------------
+
+# Room name -> priority tier, per Ruling 2 above.
+#
+# >>> OPEN QUESTION FOR THE ARCHITECT (1 of 2) — DINING'S TIER. Unresolved on
+# >>> purpose; do not settle it from this file. See the note below.
+#
+# The three rooms in tier 1 and the two categories in tier 2 are HIS, verbatim.
+# Tier 3 is the only list with an explicit catch-all ("and other ancillary
+# rooms"), so every room he did not name falls there by his own wording --
+# EXCEPT ONE.
+#
+# DINING IS THE ONE JUDGEMENT CALL, and it is a question for him (see the
+# provenance report). He labelled tier 1 "social and living" and then listed
+# three rooms; a dining room matches that CATEGORY but is absent from the LIST,
+# and it is neither ancillary (tier 3's own examples are Laundry and Walk-in
+# Closet) nor private (tier 2 is children's bedrooms and the office). Assigning
+# it by his category rather than inventing a fourth tier is the least inventive
+# reading available, but it is an inference, not his word. It is also the most
+# consequential open question in this table: Dining holds +7.50 m2 above its
+# floor today, and moving it to tier 2 or tier 3 would redirect roughly that
+# much to the Kitchen instead.
+PRIORITY_TIER: dict[str, int] = {
+    # --- tier 1, social and living: HIS LIST, verbatim ---------------------
+    "Kitchen": 1,
+    "Living": 1,
+    "Master Bedroom": 1,
+    "Dining": 1,               # INFERRED from his category label -- see above
+    # --- tier 2, private: HIS LIST, verbatim -------------------------------
+    "Bedroom 2": 2,
+    "Bedroom 3": 2,
+    "Bedroom": 2,              # slicer fallback names for the same room type
+    "Children Bedroom": 2,
+    "Office": 2,
+    # --- tier 3, kept at minimum: his two examples, then his catch-all -----
+    "Laundry": 3,              # his example
+    "Walk-in Closet": 3,       # his example
+    "Master Bathroom": 3,
+    "Bathroom": 3,
+    "Guest WC": 3,
+    "Foyer": 3,
+    "Mudroom": 3,
+    "Corridor": 3,
+    "Garage": 3,
+    "Pantry": 3,
+    "Technical Room": 3,
+    "Terrace": 3,
+    "Balcony": 3,
+}
+
+DEFAULT_TIER = 3  # an unlisted room is ancillary until he says otherwise
+
+
+# Fraction of the architect's OWN band a room's ideal sits at, per tier.
+#
+# >>> OPEN QUESTION FOR THE ARCHITECT (2 of 2) — THE TWO FRACTIONS. f(1) = 1/2
+# >>> and f(2) = 1/4 are OURS, not his. Only the tier ORDER is his, and f(3) = 0
+# >>> is his wording ("kept at minimum") rather than a dial. Unresolved on
+# >>> purpose; these two numbers are what to take back to him with this table.
+#
+# WHY A RULE AND NOT A SOURCED TABLE. He gave no ideal column, and neither
+# Neufert nor the Posobie supplies one either -- and that is not for want of
+# looking. Neufert's residential figures are FURNITURE-CLEARANCE MINIMA (p44
+# table 1a is literally "minimum room sizes"), which is exactly what
+# standards.py already spends them on; re-deriving a "Master Bedroom" from a
+# 2.00x1.60 bed with 0.75 m passes, a 0.60 m wardrobe run with 0.90 m dressing
+# space and a seating corner lands at ~16.3 m2 -- i.e. it reproduces HIS 16 m2
+# FLOOR, not an ideal above it. A furniture layout answers "how small may this
+# room be", which is a different question from "how big should it be". So the
+# ideal column cannot be sourced from the same place the floors were.
+#
+# WHAT WAS REJECTED, and why it matters: program_roomy.json's own per-space
+# targets (living 30, dining 14, kitchen_laundry 20 ...) are the obvious
+# alternative and they are WRONG for this job. They are the LLM's reading of one
+# client brief, they are per ZONE rather than per room type, and reconcile.py
+# rescales them to the footprint -- so an ideal built on them would vary with
+# the footprint and with the brief. That is Phase 1's deleted adherence term
+# wearing a new hat (see solver.py), and it is the specific thing the brief for
+# this commit told us not to rebuild.
+#
+# THE RULE, stated so it can be argued with: ideal = floor + f(tier) x (ceiling
+# - floor), rounded to 0.25 m2 (the 0.5 m grid's area quantum). It combines the
+# only two pieces of room-type data he has actually given -- the band and the
+# tier -- with one monotone parameter each. f(3) = 0 is HIS WORDING ("kept at
+# minimum"), not a choice. f(1) = 1/2 and f(2) = 1/4 are a halving sequence and
+# they are A GUESS: the ORDER is his, the two numbers are ours, and they are the
+# single question this table should be taken back to him with.
+IDEAL_BAND_FRACTION: dict[int, float] = {1: 0.50, 2: 0.25, 3: 0.00}
+
+# Objective/scoring weight per grid CELL (0.25 m2) of deviation from ideal, by
+# tier. Consumed by BOTH solver.py's zone term and slicer.py's cut scorer, from
+# here, so the two cannot drift into disagreeing about the priority order.
+#
+# The shape is Ruling 1 + Ruling 2 in one piecewise-linear preference: a room's
+# marginal value of area is TIER_W_BELOW while it is under its ideal and
+# -TIER_W_ABOVE once it is over. The kink AT the ideal is "ideal olcuye
+# catdiqdan sonra sistem dayanmalidir"; the ordering of the weights is the
+# priority list.
+#
+# FOUR ORDERING PROPERTIES ARE LOAD-BEARING (test_standards asserts them):
+#   1. BELOW is strictly decreasing in tier      -> surplus fills tier 1 first.
+#   2. ABOVE is strictly INCREASING in tier      -> whatever is left over after
+#      everyone reaches ideal settles on tier 1 rather than on the Laundry,
+#      which is Ruling 2's actual complaint.
+#   3. min(BELOW) > max(ABOVE)                   -> requirement (d): a tier-1
+#      room is never starved to trim a tier-3 room's excess.
+#   4. max(BELOW) < the net objective cost of growing the footprint by one cell
+#      (5760 - 1200 = 4560 raw; see solver.py's fp_dev and coverage terms)
+#      -> the term REDISTRIBUTES the house, it never inflates it.
+TIER_W_BELOW: dict[int, int] = {1: 1200, 2: 800, 3: 400}
+TIER_W_ABOVE: dict[int, int] = {1: 40, 2: 80, 3: 160}
+
+
+def priority_tier(room: str) -> int:
+    """The architect's Ruling 2 priority tier for a room name (1 = expand first,
+    3 = keep at minimum). Unlisted rooms are ancillary (DEFAULT_TIER)."""
+    return PRIORITY_TIER.get(_BAND_ALIAS.get(room, room), DEFAULT_TIER)
+
+
 @dataclass(frozen=True)
 class RoomStandard:
     min_w_m: float
@@ -376,6 +536,37 @@ def area_floor(room: str) -> float:
 def area_ceiling(room: str) -> float:
     spec = ROOMS.get(room)
     return spec.max_area_m2 if spec is not None else float("inf")
+
+
+def area_ideal(room: str) -> float:
+    """The architect's third value (Ruling 1): the area surplus is distributed
+    TOWARD and stops at. Derived by IDEAL_BAND_FRACTION from his own band and
+    his own tier -- see that constant for the rule and for what is his versus
+    ours.
+
+    Guaranteed to lie inside [area_floor, area_ceiling]. That guarantee is the
+    whole reason this is safe to put in the objective where Phase 1's adherence
+    term was not: a target no room can reach is a penalty no solution can avoid,
+    which is a constant with a weight on it rather than a preference. Here the
+    ideal is a point ON the room's own legal interval by construction, so a room
+    can always sit exactly on it.
+
+    A room with no ceiling (no architect band) has no meaningful band to take a
+    fraction of, so its ideal is its floor -- the tier-3 rule, which is also the
+    conservative answer for a room type nobody has ruled on."""
+    floor = area_floor(room)
+    ceiling = area_ceiling(room)
+    if not (ceiling < float("inf")) or ceiling <= floor:
+        return floor
+    frac = IDEAL_BAND_FRACTION.get(priority_tier(room), 0.0)
+    # Quantised to 0.25 m2, the area of one 0.5 x 0.5 m grid cell: an ideal off
+    # the grid is unreachable by construction and would leave every room
+    # carrying a permanent sub-cell shortfall. Then CLAMPED back into the band,
+    # because rounding a floor that is itself off-quantum (Bathroom 4.08, Guest
+    # WC 1.56) can round DOWN through it -- which would put the ideal outside
+    # the room's own legal interval and break this function's one guarantee.
+    q = round((floor + frac * (ceiling - floor)) * 4) / 4
+    return max(floor, min(ceiling, q))
 
 
 # ---------------------------------------------------------------------------

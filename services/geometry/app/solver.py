@@ -1109,6 +1109,10 @@ def _solve_once(
     # surfaces as a warning on the result.
     band_zones: list[tuple[str, tuple[float, float]]] = []
     band_conflicts: list[str] = []
+    # Ruling 1/2: the per-shape cut penalty of each COMPOSITE zone, tabulated
+    # alongside its legal (w, h) table. Non-composites get the area-based term
+    # in the objective block instead (they are one room, so area IS the room).
+    cut_penalties: list[cp_model.IntVar] = []
     for zid in present:
         sp = program.space(zid)
         assert sp is not None
@@ -1155,12 +1159,32 @@ def _solve_once(
             v = _ZoneVars(m, zid, W, H, min_w, min_h)
             m.Add(v.area >= lo_area)
             m.Add(v.area <= max(hi_area, floor_area))
+            # THE ARCHITECT'S RULING 1/2 FOR COMPOSITE ZONES (2026-08-04).
+            # slicer.cut_penalty_pairs is legal_pairs with the tier-weighted
+            # distance-from-ideal of the best cut at each shape appended, so the
+            # shape table the solver was ALREADY pinned to now carries the
+            # room-level penalty as one more column. `pen` is therefore the exact
+            # penalty of the cut the slicer will actually perform -- not a proxy
+            # for it -- and it goes straight into the objective below.
+            #
+            # WHY IT HAS TO BE THE SHAPE AND NOT THE AREA. The ancillary room in
+            # every composite is a band spanning the zone's full cross-dimension,
+            # so its area is (its own grid-snapped minimum width) x (the zone's
+            # other side): it GROWS WITH THE ZONE and the headline room keeps only
+            # the remainder. Two shapes of identical area therefore split
+            # completely differently, and an area target cannot see it --
+            # kitchen_laundry at 18.00 m2 gives Kitchen 10.00 / Laundry 8.00 at
+            # 4.5 x 4.0 but Kitchen 12.00 / Laundry 6.00 at 6.0 x 3.0. That is the
+            # measured defect, and it is reachable at constant footprint.
+            pen_pairs = slicer.cut_penalty_pairs(zid)
+            cut_pen = m.NewIntVar(0, max(t[-1] for t in pen_pairs), f"{zid}_cut_pen")
             if len(lp[0]) == 3:  # axial (kitchen_laundry): (w, h, ns)
                 ns = m.NewBoolVar(f"{zid}_ns")
-                m.AddAllowedAssignments([v.w, v.h, ns], lp)
+                m.AddAllowedAssignments([v.w, v.h, ns, cut_pen], pen_pairs)
                 ns_vars[zid] = ns
             else:
-                m.AddAllowedAssignments([v.w, v.h], lp)
+                m.AddAllowedAssignments([v.w, v.h, cut_pen], pen_pairs)
+            cut_penalties.append(cut_pen)
         else:
             # NON-COMPOSITE: HARD floor is the Neufert room standard; the brief
             # minimum (if larger) is a soft preference below, not a hard widening.
@@ -1565,6 +1589,93 @@ def _solve_once(
             sh = m.NewIntVar(0, H, f"{zid}_sh")
             m.Add(sh >= pref_h - v.h)
             obj_terms.append(-SOFT_MIN * sh)
+
+    # --- IDEAL AREA + DISTRIBUTION PRIORITY (the architect, round 4,
+    # 2026-08-04; rulings quoted verbatim in standards.py) --------------------
+    #
+    # RULING 1 says a two-value model (Min, Max) leaves the algorithm free to
+    # park every room on one rail or the other, and that the missing value is an
+    # IDEAL that surplus is distributed TOWARD and stops at. RULING 2 says which
+    # rooms get that surplus first. This is both, as a per-zone piecewise-linear
+    # preference: the marginal value of one more cell to a zone is
+    # TIER_W_BELOW[tier] while it is under its ideal and -TIER_W_ABOVE[tier]
+    # once it is over. The kink AT the ideal is "ideal olcuye catdiqdan sonra
+    # sistem dayanmalidir"; the ordering of the weights across tiers is the
+    # priority list. Exact tiling holds the total constant, so this term cannot
+    # add area to the house -- it can only decide WHERE the area already in it
+    # goes, which is precisely the complaint ("sistemin butun artigi tekce
+    # komekci otaga vermesi menteqsizdir").
+    #
+    # WHY THIS IS NOT PHASE 1'S DELETED ADHERENCE TERM. They are the same SHAPE
+    # -- a deviation penalty on zone area -- and different in the one respect
+    # that made the old one worthless. Its target was the RECONCILED PROGRAM
+    # TARGET: the LLM's per-space guesses, proportionally rescaled to the
+    # footprint. That number knows nothing about what room type is in the zone,
+    # so it could and did land BELOW the zone's own Neufert-legal floor --
+    # master_suite's legal floor exceeded its reconciled target, so that zone
+    # carried a penalty at EVERY feasible setting. A penalty every solution pays
+    # is a constant, not a preference; it ranked nothing and it swamped the
+    # adjacency rewards while doing it.
+    #
+    # This target is slicer.zone_ideal(), which is (a) built only from ROOM-TYPE
+    # constants -- the architect's band and his tier -- with no footprint, no
+    # program target and no reconcile anywhere in it, and (b) PROVEN REACHABLE,
+    # because it is derived by probing the real cutters over the zone's own
+    # legal_pairs table rather than by summing room ideals and hoping the cut
+    # can realise the sum (it frequently cannot: the naive sums for
+    # kitchen_laundry / master_suite / children are 20.00 / 32.25 / 32.08 and
+    # the reachable ideals are 22.50 / 37.50 / 35.00). So no zone can be
+    # penalised for a size a hard constraint forced on it: every zone can sit
+    # exactly on its ideal, and the only reason one does not is that another
+    # zone wanted the area more. That is a preference that ranks plans, which is
+    # the thing the old term failed to be.
+    #
+    # The residual shortfall is GLOBAL and COMPETITIVE, not per-zone and
+    # constant: the zone ideals sum to 203.50 m2 against a 201.50 m2 footprint,
+    # so ~2 m2 of shortfall is unavoidable in aggregate -- but WHICH zone eats
+    # it changes the objective, which is exactly what makes it a ranking signal.
+    #
+    # TWO ENCODINGS, one per kind of zone, both exact:
+    #
+    #   COMPOSITE zones (master_suite, children, kitchen_laundry, entry) are
+    #   already pinned to a legal (w, h) table, so the penalty is tabulated
+    #   PER SHAPE and appended to that same table (see the composite branch
+    #   above and slicer.cut_penalty_pairs). `cut_penalties` therefore holds the
+    #   exact room-level distance-from-ideal of the cut the slicer will perform,
+    #   with no proxy in between. This is the encoding that matters: the split
+    #   inside a composite is decided by the zone's SHAPE, not its area.
+    #
+    #   NON-COMPOSITE zones (living, dining, office, garage, circulation) ARE
+    #   one room, so the zone's area is the room's area and the piecewise-linear
+    #   area term below is already exact for them.
+    #
+    # Weights: see standards.TIER_W_BELOW / TIER_W_ABOVE, whose four ordering
+    # properties are asserted in test_standards. The one that matters here is
+    # max(TIER_W_BELOW) < 4560, the net objective cost of growing the footprint
+    # by one cell (the fp_dev penalty 3*plot_cells less the coverage reward
+    # 12*100) -- so this term REDISTRIBUTES the house and can never inflate it.
+    # That bound is not theoretical: at 5500 the roomy solve buys tier-1 area by
+    # growing the footprint 201.50 -> 208.00 m2 (42.0% -> 43.3% site coverage),
+    # which trades away the ~40% coverage figure from his round 3. Held below it,
+    # every gain this term makes is paid for out of the house's own area.
+    obj_terms += [-p for p in cut_penalties]
+    for zid, v, tcells, min_w, min_h, pref_w, pref_h in zinfo:
+        if slicer.legal_pairs(zid):
+            continue  # composite: already scored exactly, per shape, above
+        ideal_m2 = slicer.zone_ideal(zid)
+        if ideal_m2 is None:
+            continue  # no architect band anywhere in this zone: no opinion
+        ideal_cells = int(round(ideal_m2 / (GRID_M * GRID_M)))
+        tier = min(
+            (standards.priority_tier(n) for n in slicer.zone_members(zid)),
+            default=standards.DEFAULT_TIER,
+        )
+        short = m.NewIntVar(0, plot_cells, f"{zid}_ideal_short")
+        m.Add(short >= ideal_cells - v.area)
+        obj_terms.append(-standards.TIER_W_BELOW[tier] * short)
+        over = m.NewIntVar(0, plot_cells, f"{zid}_ideal_over")
+        m.Add(over >= v.area - ideal_cells)
+        obj_terms.append(-standards.TIER_W_ABOVE[tier] * over)
 
     m.Maximize(sum(obj_terms))
 

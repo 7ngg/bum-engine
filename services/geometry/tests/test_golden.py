@@ -92,7 +92,38 @@ GOLDEN = Path(__file__).resolve().parent / "golden" / "gW_eN_seed1.json"
 #     SUM                                      1026540    +534.6562 /cell
 # which is the solver's reported 534.65625. Footprint 208.00 -> 201.50 m2, void
 # 0.00, coverage 1.0000, all 16 rooms inside their architect bands.
-EXPECTED_OBJECTIVE = 534.65625
+# EXPECTED_OBJECTIVE moved 534.65625 -> 477.99427083333336 on 2026-08-04 (the
+# architect's three-value / distribution-priority commit). THIS IS THE EASIEST
+# RE-BASELINE IN THIS FILE'S HISTORY TO VERIFY, because THE PACKING DID NOT MOVE:
+# the solve returns byte-for-byte the same zone rectangles as at 534.65625, so
+# every surviving term above is UNCHANGED and the entire -56.66197916666667 swing
+# is the new ideal/tier penalty evaluated on the old solution. (The house does
+# translate by (-0.5, -0.5) inside the plot -- a tie the setbacks leave free and
+# every objective term is invariant to -- which is why the exact-coordinate
+# golden below moved while nothing about the plan did.)
+#
+# Reconstructed from the solved rects, plot_cells = 1920, raw units:
+#     kitchen_laundry  4.5x4.0  cut-table    31360   Kitchen 10.00, Laundry 8.00
+#     master_suite     5.5x5.5  cut-table    34080   MBed 16.50, MBath 6.25, WIC 7.50
+#     children         4.0x8.0  cut-table    15309   Bed2 12.00, Bath 8.00, Bed3 12.00
+#     entry            5.5x2.0  cut-table     1562   Mud 3.00, Foyer 5.00, WC 3.00
+#     living           4.5x6.5  area         15600   29.25 vs ideal 32.50, tier 1
+#     circulation      1.5x8.0  area          3840   12.00 vs ideal  6.00, tier 3
+#     garage           7.5x5.0  area          5280   37.50 vs ideal 29.25, tier 3
+#     office           3.0x4.0  area          1600   12.00 vs ideal 12.50, tier 2
+#     dining           3.0x6.5  area           160   19.50 vs ideal 18.50, tier 1
+#     ------------------------------------------------------------------
+#     TOTAL                                 108791   = 56.66197916666667 /cell
+# and 534.65625 - 56.66197916666667 = 477.9942708333333, the solver's reported
+# value. Terms sum; nothing is unexplained.
+#
+# WHAT IT MEANS THAT NOTHING MOVED. It is not that the term is too weak. At this
+# footprint the packing has no degrees of freedom left: pinning fp.area to
+# exactly 201.50 m2 and raising standards.TIER_W_BELOW 333x (to 400000, i.e.
+# dominating even the 76800-per-bool adjacency rewards) still returns the
+# IDENTICAL zone vector, OPTIMAL, on both feasible presets. The room areas at
+# roomy @192 are decided by the hard constraints, not by any objective.
+EXPECTED_OBJECTIVE = 477.99427083333336
 EXPECTED_ROOM_NAMES = {
     "Living", "Dining", "Kitchen", "Laundry",
     "Master Bedroom", "Master Bathroom", "Walk-in Closet",

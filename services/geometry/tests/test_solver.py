@@ -207,29 +207,26 @@ def test_tight_is_illegal_brief(tight_program):
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "NEGATIVE CONTROL that lost its power in PHASE 1 (architect area bands) "
-        "-- the exact mirror of what happened to "
-        "test_validator.py::test_kitchen_direct_constraint_is_load_bearing, which "
-        "regained its power in the same commit. This test switches "
-        "_CHILD_CENTER_COVER OFF and asserts the hall Bathroom loses its direct "
-        "corridor wall, which is how it proved the constraint is what delivers "
-        "the guarantee. Under the area bands the band-shaped children zone lands "
-        "the Bathroom against the corridor ANYWAY when the constraint is off: "
-        "measured on gW_eW, cover OFF, Corridor<->Bathroom 2.00 m, direct == True "
-        "(it was 0.50 m when this control was written). "
-        "THE GUARANTEE ITSELF IS INTACT -- with the constraint ON, "
-        "Corridor<->Bathroom measures 2.00 m on BOTH feasible presets (gW_eN, "
-        "gE_eN), and _force_vertical_cover_center is in fact more load-bearing "
-        "than ever: it is the proven blocker for the Guest-WC wet-core and "
-        "Kitchen<->Dining fixes (see their xfails). It is the CONTROL that is no "
-        "longer discriminating, not the constraint. Strict, so if the packing "
-        "ever moves back to where switching the cover off strands the Bathroom, "
-        "that is the signal to un-xfail this."
-    ),
-)
+# UN-XFAILED 2026-08-04 (the architect's three-value / distribution-priority
+# commit), on this control's own written instruction: "Strict, so if the packing
+# ever moves back to where switching the cover off strands the Bathroom, that is
+# the signal to un-xfail this."
+#
+# It had been a strict xfail since PHASE 1: under the area bands the band-shaped
+# children zone landed the Bathroom against the corridor ANYWAY with the
+# constraint off (gW_eW, cover OFF: Corridor<->Bathroom 2.00 m, direct == True),
+# so the control could not tell the constraint apart from its absence.
+#
+# The ideal/tier objective term moves the gW_eW packing off that coincidence.
+# Re-measured on roomy @192, gW_eW, seed 1, workers=1, avoid HELD:
+#     cover OFF -> Corridor<->Bathroom 0.50 m, direct == False
+#     cover ON  -> Corridor<->Bathroom 2.00 m, direct == True
+# which is the 0.50-vs-2.50 discrimination this control was written against.
+# Worth noting WHY it moved when the two production presets did not: gW_eN and
+# gE_eN are packing-forced at 201.50 m2 (proven -- pinning the footprint there
+# and raising the tier weights 333x still returns the identical zone vector), so
+# no objective term can change them. gW_eW is not, so it is the preset where this
+# term's effect is visible at all.
 def test_children_bathroom_direct_needs_center_cover(roomy_program):
     # Proves _force_vertical_cover_center is LOAD-BEARING, not decorative: with it
     # OFF (children falls back to a plain corridor/entry disjunction) an entry-west

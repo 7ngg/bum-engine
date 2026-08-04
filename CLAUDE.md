@@ -119,6 +119,38 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   terrace); `y=depth` is north/street (garage, entry). `program.orientation`
   records the real compass mapping; this internal frame is what makes the
   hard-zoning rules in `solver.py`/`presets.py` unambiguous.
+- **`standards.py`** — the per-room-type source of truth: Neufert/SNiP shape
+  floors, the architect's area **bands** (round 3), and his **three-value model
+  and priority tiers** (round 4, 2026-08-04, both rulings quoted verbatim there).
+  Every room has `area_floor` / `area_ideal` / `area_ceiling` and a
+  `priority_tier` (1 social+living, 2 private, 3 kept at minimum); `area_ideal`
+  is *derived* — `floor + f(tier)·(ceiling − floor)`, `f = {1: ½, 2: ¼, 3: 0}`.
+
+  **FINDING 3 — no ideal column is sourceable, and Neufert is the reason.**
+  Neufert's residential figures are furniture-clearance **MINIMA** (p44 table 1a
+  is titled *"minimum room sizes"*). Re-deriving a Master Bedroom from bed
+  2.00 × 1.60 + 0.75 m passes + 0.60 m wardrobe run + 0.90 m dressing space +
+  a seating corner gives **~16.3 m² — the architect's 16 m² FLOOR**. A furniture
+  layout answers *"how small may this room be"*, never *"how big should it be"*.
+  That is why standards.py already spends Neufert on the floors, why the ideals
+  cannot come from the same place, and why they are DERIVED from a stated rule.
+  (`program_roomy.json`'s per-space targets were also rejected as a source: LLM
+  guesses, per zone not per room type, and rescaled to the footprint by
+  reconcile — i.e. Phase 1's deleted adherence term in a new hat.)
+
+  **TWO OPEN QUESTIONS FOR THE ARCHITECT, unresolved on purpose** (flagged in
+  `IDEAL_BAND_FRACTION` and `PRIORITY_TIER`): (a) `f(1)=½` and `f(2)=¼` are
+  OURS — only the tier ORDER is his, and `f(3)=0` is his wording rather than a
+  dial; (b) **Dining's tier** — he named tier 1 "social and living" then listed
+  three rooms, none of them Dining; tier 3 has a catch-all, tiers 1 and 2 do
+  not. Placed in tier 1 by his category. Most consequential open item: Dining
+  holds +7.50 m² above its floor.
+
+  `TIER_W_BELOW`/`TIER_W_ABOVE` are the objective weights, consumed by
+  **both** `solver.py` and `slicer._cut_score` so the zone-level and room-level
+  rules cannot disagree; `max(TIER_W_BELOW) < 4560` is load-bearing — it is the
+  net cost of one cell of footprint growth, so the term redistributes the house
+  and can never inflate it.
 - **`solver.py`** — CP-SAT over ~8 macro-zones as free rectangles on a
   `GRID_M=0.5` m grid. Each zone gets `x0,y0,x1,y1,w,h,area` int vars;
   `area=w*h` constrained to `[0.72,1.45]×target_m2`; aspect `w≤3h,h≤3w`;
@@ -148,10 +180,11 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   entry** door (prefers Foyer's north/street-facing exterior wall) and a
   **terrace** projecting south off Living.
 
-  **OPEN DEFECT — composite room starvation (measured 2026-08-03).** Inside
-  every composite zone the slicer pins the *headline* room to its area floor and
-  hands all the slack to the *ancillary* room. Measured on roomy @192, gW_eN
-  (footprint 201.50 m², 48.46 m² of slack above the binding floors):
+  **"COMPOSITE ROOM STARVATION" — THE SYMPTOM IS REAL, THE DIAGNOSIS WAS
+  FALSIFIED (symptom measured 2026-08-03, diagnosis overturned 2026-08-04).**
+  The headline room of every composite zone sits on its area floor while the
+  ancillary carries the slack. Measured on roomy @192, gW_eN (footprint
+  201.50 m², 48.46 m² above the binding floors):
 
   | zone | headline room | ancillary |
   |---|---|---|
@@ -160,12 +193,59 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   | `master_suite` | Master Bedroom **+0.50** | Walk-in Closet **+3.30** |
   | `entry` | Mudroom **3.00 = floor, +0.00** | Foyer +1.00 |
 
-  The objective's coverage term is **indifferent about which room grows** — it
-  only rewards filling the footprint with no void — so it is the composite CUT,
-  not the objective, that decides. Every number passes (all 16 rooms sit inside
-  their architect bands), and the plan still reads as cramped in a drawing: the
-  rooms a client actually names are the ones on their minimums. This is a
-  quality defect independent of the diversity work and it is not fixed.
+  Every number passes (all 16 rooms sit inside their architect bands), and the
+  plan still reads as cramped in a drawing: the rooms a client actually names
+  are the ones on their minimums.
+
+  This entry used to end: *"the objective's coverage term is indifferent about
+  which room grows, so it is the composite CUT, not the objective, that
+  decides."* **Both halves are false.** Building the architect's three-value
+  model (2026-08-04) was what measured it:
+
+  - **FINDING 1 — the slicer is not starving anyone. There was never a
+    distribution decision being made badly.** The Laundry is not *given* +4.00.
+    It is a band spanning the zone's whole cross-dimension at its own
+    grid-snapped 2.0 m minimum width, so on a 4.5 × 4.0 zone **2.0 × 4.0 =
+    8.00 m² is the smallest it can physically be**. Every composite cut at these
+    shapes has one or two grid-legal candidates, and the choice is forced or an
+    exact tie. Making the cut tier-aware (`slicer._cut_score`) is correct and
+    changes nothing here, because there is nothing to choose.
+  - **FINDING 2 — at 201.50 m² there is no slack to distribute at all.** Exact
+    tiling + the zoning pins + required adjacency + the access constraints fully
+    determine every zone area: **zero degrees of freedom**. Proven, not
+    inferred — pin `fp.area` to exactly 201.50 m² and raise
+    `standards.TIER_W_BELOW[1]` **333×** (1200 → 400000, dominating even the
+    76800-per-bool adjacency rewards) and CP-SAT returns **OPTIMAL on the
+    identical zone vector** on both feasible presets. No objective term, at any
+    weight, can move a room here. The ideal-area term is correct and **bites the
+    moment slack exists**: gW_eW is *not* packing-forced and the term does change
+    its outcome there (it restored
+    `test_solver.py::test_children_bathroom_direct_needs_center_cover` from a
+    dead strict-xfail to a discriminating control — cover OFF now gives
+    Corridor↔Bathroom 0.50 m / not direct, ON gives 2.00 m / direct).
+
+  The lever that *does* exist is the zone's **shape** at constant area
+  (kitchen_laundry at 18.00 m² gives Kitchen 10.00 / Laundry 8.00 at 4.5 × 4.0
+  but Kitchen 12.00 / Laundry 6.00 at 6.0 × 3.0), which is why the term is
+  tabulated per shape — but at 201.50 m² the packing does not offer the second
+  shape either. Buying tier-1 area therefore costs **footprint**: measured,
+  201.50 → 208.00 m² (42.0% → 43.3% site coverage) moves Master Bedroom
+  16.50 → 19.25, Living 29.25 → 31.50, Office 12.00 → 13.50 — and the Kitchen
+  still does not move until 216.00 m². **That trades away the architect's own
+  ~40% coverage figure from round 3 to satisfy round 4, and is his call, not
+  ours.** Same wall as the arrangement count, same open path: **footprint shape
+  (L, U)**.
+
+  **ARCHITECT RULING 3 — corridor proportion (round 4, 2026-08-04). RECORDED,
+  NOT IMPLEMENTED.** He caps a corridor at 3:1 or 4:1; at a 1.5 m width that is
+  4.5–6.0 m of length. Ours is **1.5 × 8.0 = 12.00 m², 5.33:1** (an earlier note
+  said 1.5 × 9.0 = 6:1 — stale, re-measured 2026-08-04 on both feasible presets).
+  He adds that a plan forcing a long corridor should either widen it into an
+  integrated hall or redistribute the rooms to shorten it. Measured: **no
+  feasible configuration reaches under 4:1** — the best is exactly 4.00:1 and
+  both configurations achieving it fail the bedroom-privacy check. The
+  distribution work does **not** move it on its own (corridor unchanged at
+  1.5 × 8.0 before and after). Needs its own round.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not
