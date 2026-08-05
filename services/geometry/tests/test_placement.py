@@ -298,17 +298,18 @@ def test_guarantee_vector_is_the_band_offsets_and_is_deterministic():
     assert placement.guarantee_vector(cut, (0.0, 0.0, 4.5, 4.0)) == gv
 
 
-def test_proposed_tie_break_derives_both_documented_exemplars():
-    """placement.tier_tie_break_key is ONE rule for four disagreeing loop orders,
-    and it derives both of the exemplars that motivated it: _slice_children's
+def test_the_adopted_tie_break_derives_both_documented_exemplars():
+    """tier_tie_break_key is ONE rule for what used to be four disagreeing loop
+    orders, and it derives both exemplars that motivated it: _slice_children's
     even split and _split_off_wc's smallest ancillary strip.
 
-    IT IS NOT A DROP-IN FOR ALL FOUR, and the measurement says so: swept over
-    _STEPS^2, it picks a different tied candidate than the cutter on 115
-    master_suite shapes, 6 children and 4 entry (0 for kitchen_laundry, which has
-    no ties at all). Every one of those is a `_cut_score` tie, so the objective
-    cannot tell them apart -- but the GEOMETRY differs, which is why this is
-    proposed and measured here rather than wired in. NOT APPLIED."""
+    ADOPTED -- slicer._best_cut now uses it as the secondary key. It can only
+    reorder candidates the primary key scores IDENTICALLY, and the price was
+    measured before adopting: the objective is unchanged to ten decimals
+    (625.4109375) on both presets, legal_pairs and cut_penalty_pairs are
+    bit-identical, and the only geometry that moves anywhere in the shipped plan
+    is Master Bathroom 6.25 <-> Walk-in Closet 7.50 swapping ends of the master
+    service strip."""
     even = [
         slicer.FinalRoom("Bedroom 2", "private", "children", (0.0, 0.0, 3.0, 3.75)),
         slicer.FinalRoom("Bathroom", "wet", "children", (0.0, 3.75, 3.0, 5.75)),

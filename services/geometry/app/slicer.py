@@ -175,13 +175,72 @@ def _cut_score(rects: list[tuple[str, geom.Rect]]) -> tuple[int, int]:
     return (int(round(below)), int(round(above)))
 
 
+def tier_tie_break_key(rooms: list[FinalRoom]) -> tuple:
+    """THE SINGLE TIE-BREAK, replacing four cutters' four different loop orders.
+
+    _cut_score implements Rulings 1 and 2 as (weighted shortfall, weighted
+    excess). When two cuts TIE on it the architect's area model is by
+    construction indifferent -- the objective tabulates `below + above`, so
+    cut_penalty_pairs cannot tell them apart either -- and something outside the
+    totals has to decide. Until now four things did, and they DISAGREED:
+    _slice_children preferred the most even split, while _split_off_wc,
+    _slice_kitchen and _slice_master preferred the smallest ancillary strip.
+    Neither was chosen; both were the order a loop happened to run in.
+
+    WHAT IS HIS AND WHAT IS OURS -- flagged the way IDEAL_BAND_FRACTION's
+    fractions were, because three of the four parts are ours:
+
+      1. THE TIER ORDER IS HIS, verbatim (Ruling 2, "otaq novune gore prioritet
+         sirasi"): tier 1 is compared before tier 2, tier 2 before tier 3.
+      2. >>> OURS: that a tie in the TOTAL should be reopened per tier at all.
+         He said surplus goes to tier 1 first; he did not say two cuts with the
+         same weighted total are distinguishable. This is the step that makes
+         the rule bite.
+      3. >>> OURS: MINIMAX within a tier -- the largest single-room deviation,
+         smallest first. It is a fairness reading of "bring each room up to its
+         ideal": two bedrooms at 14.25/14.25 beat 13.50/15.00 because the
+         worst-off room is less badly off. It is what derives BOTH of the
+         behaviours that currently disagree, which is the evidence for it, not a
+         proof of it.
+      4. >>> OURS: geometric order as the final terminator. Arbitrary, and only
+         there so the rule is total.
+    >>> OPEN QUESTION FOR THE ARCHITECT: 2, 3 and 4 are ours. The measured effect
+    >>> of adopting them is exactly one swap in one zone -- Master Bathroom 6.25
+    >>> <-> Walk-in Closet 7.50 -- at an IDENTICAL objective (625.4109375 on both
+    >>> presets, to ten decimals) and with every validator check and
+    >>> must-not-regress item unchanged. So the cost of being wrong here is one
+    >>> room pair swapping ends, not a worse plan.
+    """
+    per_tier: dict[int, list[float]] = {1: [], 2: [], 3: []}
+    for r in rooms:
+        x0, y0, x1, y1 = r.rect
+        dev = abs((x1 - x0) * (y1 - y0) - standards.area_ideal(r.name))
+        per_tier.setdefault(standards.priority_tier(r.name), []).append(dev)
+    key: list = []
+    for tier in (1, 2, 3):
+        devs = sorted(per_tier.get(tier, []), reverse=True)
+        key.append((round(sum(devs), 6), tuple(round(d, 6) for d in devs)))
+    key.append(tuple((r.rect[0], r.rect[1], r.name) for r in rooms))
+    return tuple(key)
+
+
 def _best_cut(cands: list[list[FinalRoom]]) -> list[FinalRoom] | None:
-    """The candidate whose rooms sit closest to their ideals, by _cut_score.
-    `min` is stable, so an exact tie keeps the earliest candidate -- i.e. the
-    one the previous first-legal-wins rule would have returned."""
+    """The candidate whose rooms sit closest to their ideals, by _cut_score, with
+    exact ties broken by tier_tie_break_key.
+
+    This used to end "`min` is stable, so an exact tie keeps the earliest
+    candidate -- i.e. the one the previous first-legal-wins rule would have
+    returned", which made the tie-break a property of each cutter's loop order
+    rather than a decision. Four cutters, four orders, two of them contradictory.
+    The secondary key makes it one stated rule; it can only reorder candidates
+    the primary key already scores IDENTICALLY, so no ranking the solver sees can
+    move (measured: objective unchanged to ten decimals on both presets)."""
     if not cands:
         return None
-    return min(cands, key=lambda rooms: _cut_score([(r.name, r.rect) for r in rooms]))
+    return min(cands, key=lambda rooms: (
+        _cut_score([(r.name, r.rect) for r in rooms]),
+        tier_tie_break_key(rooms),
+    ))
 
 
 def _side_of(r: geom.Rect, other: geom.Rect) -> str:

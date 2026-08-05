@@ -462,6 +462,54 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   room, and the fix is verified inert: `legal_pairs('entry')` is still 25 shapes
   with an identical signature, identical members, identical band and an identical
   74730 penalty sum.
+  **THE TIE-BREAK, ADOPTED AND PRICED FIRST** (`slicer.tier_tie_break_key`,
+  now `_best_cut`'s secondary key). Four cutters used to break `_cut_score` ties
+  by whatever order their loop ran in, and two of the four contradicted each
+  other. One stated rule replaces them. Measured before adopting, roomy @208,
+  both presets, workers=1, seed=1, avoid held:
+  **objective 625.4109375000 → 625.4109375000, unchanged to ten decimals**;
+  `legal_pairs` and `cut_penalty_pairs` bit-identical; zone rects identical;
+  `validate().ok` true with the same three warnings; every must-not-regress item
+  identical (16/16 reachable, root Foyer, void 0.00, Corr↔MBed 1.50,
+  Corr↔Kitchen 4.00, Corr↔Bathroom 2.00, Corr↔B2/B3 3.00, Garage parent Mudroom,
+  Guest WC parent Foyer, Garage 37.50, every room in band). The **entire** golden
+  diff is two rooms swapping ends of the master service strip — Master Bathroom
+  6.25 → 7.50, Walk-in Closet 7.50 → 6.25, divider x=15.0 → 15.5 — with room,
+  wall, door and window counts unchanged. **One of its four parts is the
+  architect's, three are ours**, flagged on the function like
+  `IDEAL_BAND_FRACTION`'s fractions were.
+
+  **STAGE 2 — WIRING THE ENUMERATOR AS THE PRODUCTION PATH — WAS MEASURED AND
+  STOPPED. It is a MODEL change, not a selection swap.** Rebuilding
+  `legal_pairs` through `subdivisions() + violations() + _best_cut` **loses
+  nothing and adds a great deal**:
+
+  | zone | old shapes | new | added | lost |
+  |---|---|---|---|---|
+  | kitchen_laundry | 74 | 74 | 0 | 0 |
+  | master_suite | 35 | **127** | +92 | 0 |
+  | children | 34 | **67** | +33 | 0 |
+  | entry | 24 | **48** | +24 | 0 |
+
+  167 → 316 shapes, and every added one is a zone rectangle the bespoke cutters
+  simply could not subdivide (master_suite at 3.0 × 10.0, say — legal by band and
+  shape floor, expressible as a different guillotine tree, inexpressible as
+  "band, then split the band"). So **the four cutters' limited topology was
+  silently acting as a SHAPE CONSTRAINT on the solver**, and the general
+  enumerator removes it. `AddAllowedAssignments` then admits nearly double the
+  shapes, the CP-SAT model is materially different, and the measured result is
+  **objective 625.41 → 703.70, status FEASIBLE not OPTIMAL, and a plan that
+  degraded to 11 rooms** (Master Bathroom, Walk-in Closet, Mudroom, Guest WC and
+  Laundry all absent). Two further facts from the same probe: the build cost is
+  **3156.6 ms against today's 1052.4 ms, i.e. 3.0×**, well past the 1.5× that was
+  expected; and `zone_members()` **recurses forever** under the swap, because it
+  derives membership by probing the cutter while the new path needs that list as
+  an input — the first hard proof of Phase 0's Part 4 finding.
+
+  `_penalty_disagreement` stayed silent in both arms (context-free and
+  context-aware at slice time), so the build-time/slice-time contract itself is
+  not the blocker. The blocker is that removing an implicit shape constraint
+  needs its own round with its own gate, not a swap commit.
 - **`placement.py`** — THE PLACEMENT FILTER: the constraints the four cutters
   hold *by construction*, restated as explicit predicates over an enumerated
   candidate. `violations(cand, rect, ctx) -> list[str]`, each tagged C1..C19 so
@@ -544,15 +592,9 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   exposed for diversity, the candidate index becomes a decision variable — the
   same idiom as the existing `ns` column. Not ported in this round.
 
-  **THE TIE-BREAK: one rule proposed, NOT APPLIED.** `tier_tie_break_key` reads
-  Ruling 2 as a per-tier lexicographic comparison, then minimax within a tier
-  (the worst-off room least badly off), then geometry. It derives *both*
-  exemplars that currently disagree — `_slice_children`'s even split and
-  `_split_off_wc`'s smallest strip. But swept over `_STEPS²` it picks a different
-  tied candidate on **115 master_suite shapes, 6 children, 4 entry** (0 for
-  kitchen_laundry, which has no ties at all). Every one is a `_cut_score` tie, so
-  the objective is indifferent and no ranking would move — but the geometry
-  would, so it is measured and flagged rather than wired in.
+  **THE TIE-BREAK IS ADOPTED** — it now lives in `slicer.tier_tie_break_key` and
+  is `_best_cut`'s secondary key. See that function for the rule and for the
+  his-versus-ours split.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not

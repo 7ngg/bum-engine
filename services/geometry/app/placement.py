@@ -89,6 +89,7 @@ from dataclasses import dataclass, field
 
 from . import geom, standards
 from .slicer import FinalRoom, _in_band, _room_legal
+from .slicer import tier_tie_break_key as _tier_tie_break_key
 from .solver import GRID_M
 from .validator import MIN_EXTERIOR_WALL_M
 from .zones import ACCESS_DOOR_M
@@ -440,45 +441,11 @@ def guarantee_vector(cand: list[FinalRoom], rect: geom.Rect) -> dict[str, Guaran
 # ---------------------------------------------------------------------------
 
 
-def tier_tie_break_key(cand: list[FinalRoom]) -> tuple:
-    """ONE rule to replace four disagreeing loop orders. NOT WIRED IN.
-
-    `_cut_score` already implements Rulings 1 and 2 as (weighted shortfall,
-    weighted excess). When two candidates TIE on it, the architect's area model
-    is by construction indifferent, so the tie-break must come from outside the
-    totals -- and the only thing his rulings say that a TOTAL cannot express is
-    that the priority is PER TIER. Hence:
-
-      1. the per-tier deviation vector, tier 1 first. Two cuts with the same
-         grand total but different distributions are not equally good: Ruling 2's
-         "priority order by room type" says tier 1's deviation is compared before
-         tier 2's, and tier 2's before tier 3's.
-      2. MINIMAX within a tier -- the largest single-room deviation, smallest
-         first. This is what makes "bring rooms up to their ideal" fair between
-         two rooms of the same tier: 14.25/14.25 beats 13.50/15.00 because its
-         worst-off room is less badly off. It reproduces `_slice_children`'s
-         even-split preference from the ruling rather than from a loop order, and
-         it also reproduces `_split_off_wc`'s smallest-strip preference, where
-         Foyer 5.25 / WC 2.25 has max excess 1.25 against 4.50/3.00's 1.44.
-      3. geometric order, as an arbitrary but documented terminator.
-
-    So one rule derives BOTH cutter behaviours that currently disagree. Where it
-    still differs from a cutter, it differs only among candidates the objective
-    scores identically."""
-    per_tier: dict[int, list[float]] = {1: [], 2: [], 3: []}
-    for r in cand:
-        dev = abs(_area(r.rect) - standards.area_ideal(r.name))
-        per_tier.setdefault(standards.priority_tier(r.name), []).append(dev)
-    key: list = []
-    for tier in (1, 2, 3):
-        devs = sorted(per_tier.get(tier, []), reverse=True)
-        key.append((round(sum(devs), 6), tuple(round(d, 6) for d in devs)))
-    key.append(tuple((r.rect[0], r.rect[1], r.name) for r in cand))
-    return tuple(key)
-
-
-def _area(rc: geom.Rect) -> float:
-    return (rc[2] - rc[0]) * (rc[3] - rc[1])
+# ADOPTED, and it now lives in slicer.py beside _cut_score and _best_cut, which
+# is the pair it belongs to. Re-exported here because this module proposed it and
+# the placement tests exercise it; see slicer.tier_tie_break_key for the rule and
+# for which of its four parts are the architect's and which are ours.
+tier_tie_break_key = _tier_tie_break_key
 
 
 def rotation_would_admit(name: str, rect: geom.Rect) -> bool:
