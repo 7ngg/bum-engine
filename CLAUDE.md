@@ -371,6 +371,88 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   across the ladder) but the packing puts the surplus elsewhere. The one
   configuration seen with a bigger corridor is the artificial garage-capped
   probe above (16.00 m², i.e. *worse*). Ruling 3 still needs its own round.
+
+  **THE BUILD-TIME / SLICE-TIME CONTRACT IS NOW ASSERTED, NOT ASSUMED**
+  (`slicer._penalty_disagreement`, called from `slice_zones` beside
+  `_degradation_warning`). `cut_penalty_pairs` tabulates, per zone SHAPE, the
+  penalty of the cut the slicer *will* perform, and the solver puts that straight
+  into the objective — so the objective minimises a value computed at MODEL-BUILD
+  time for a cut performed at SLICE time. It holds today for two fragile reasons:
+  `_best_cut` is a deterministic `min` with a stable tie-break, and the axial
+  zones are tabulated on one representative side per axis, exact only because the
+  other side is the same cut mirrored. **`_degradation_warning` cannot catch a
+  break: it fires when a ROOM GOES MISSING, never when a room is a different
+  SIZE than the number the solver optimised.** The check re-scores the actual cut
+  and compares; it is silent when they agree (always, today, so no current output
+  changes) and emits on `SolveResult.warnings` when they do not. It costs a
+  ≤76-entry dict build plus one `_cut_score` over ≤3 rects — deliberately
+  uncached, since a second cache could only go stale against `_PENALTY_CACHE`,
+  which is the exact drift it exists to prevent. `test_subdivide.py` pins it both
+  ways: silent on a real solve, and it FIRES when handed a deliberately wrong cut.
+- **`subdivide.py`** — the GENERAL guillotine subdivider.
+  `subdivisions(rect, rooms, side, zone)` enumerates every binary guillotine
+  partition to depth ≤ 2 (up to four leaves) over both axes, all grid offsets and
+  all room-to-leaf assignments, filtered by `slicer._in_band`. **MACHINERY ONLY —
+  `slice_zones` still calls the four bespoke cutters**, so it cannot move the
+  golden or the objective. `tests/test_subdivide.py` is the oracle: the four
+  cutters are the reference, and over the whole `_STEPS²` table on every
+  production side the enumerator must contain every candidate they find and pick
+  the same cut. Depth 2 covers all four cutters (1 cut; 2 parallel; 1 cut + 1
+  perpendicular; the same with an axis fallback) *and* the cases they cannot
+  express — three bedrooms in `children`, a kitchen with no laundry, an entry
+  with no mudroom. The ROOM LIST IS AN INPUT (Phase 0 Part 4): `zone_members()`
+  derives membership as "the fullest split the cutter can emit", which conflates
+  a laundry-less brief with a too-small zone; handing the list in separates them.
+  `models.ZoneId` stays a closed nine-value Literal — `layout.schema.json`
+  already treats room and zone names as free strings.
+
+  **SUBDIVISION IS NOT DETERMINED — the opposite of zone placement, and this is
+  the number the round was run for** (measured 2026-08-05, roomy @208, gW_eN):
+
+  | | kitchen_laundry | master_suite | children | entry |
+  |---|---|---|---|---|
+  | at the SHIPPED rect | 4.5×4.0 | 5.5×6.0 | 4.0×8.0 | 5.5×2.0 |
+  | cutter finds | 1 | 4 | 1 | 1 |
+  | **enumerator finds** | **2** | **32** | **6** | **12** |
+  | over the zone's whole `legal_pairs` table | 294 | 972 | 924 | 576 |
+  | cutter, same table | 143 | 156 | 154 | 28 |
+  | legal shapes with >1 subdivision | 76/76 | 35/35 | 34/34 | 25/25 |
+
+  52 subdivisions at the shipped rectangles against the cutters' 7; 2766 across
+  the tables against 481; and **every single legal shape of every zone has more
+  than one legal subdivision**. So the architect's expectation that variants
+  differ in internal subdivision is satisfiable — unlike the zone arrangement,
+  where six exhausted levers left exactly one. Cost is a non-issue: **1052 ms
+  against today's 889 ms for the shape tables = 1.18×**, and memoising per
+  `(rooms, w, h, side)` makes a second pass free.
+
+  **BUT 24 OF 48 SURVIVE THE GATE AND HALF OF THOSE ARE INVISIBLE.** Rebuilding
+  the whole layout on each alternative at the shipped 208 arrangement:
+  kitchen_laundry 1 alternative → 1 clean, master_suite 31 → 15, children 5 → 5,
+  entry 11 → 3. Of the 24 validator-clean plans, **12 sit at
+  `_facade_distance` 0 and `generate()` drops distance-0 candidates outright**.
+  The other 12 — all from `master_suite` — do score > 0, which CORRECTS the Phase
+  0 reading that subdivision is entirely invisible to the selector. It is
+  partially visible, and only because some partitions move a room onto a
+  different face of the house.
+
+  **TWO FINDINGS ABOUT THE EXISTING CUTTERS came out of building the oracle**,
+  both recorded in `tests/test_subdivide.py`'s docstring:
+  - **`_slice_entry` does not band-check its own Mudroom.** It takes
+    `depth = _ceil_snap(mud.min_w_m)` and emits the strip unconditionally, so at
+    a 3.0 × 5.5 entry zone it produces a 1.5 × 5.5 = 8.25 m² Mudroom — over the
+    architect's 8 m² ceiling AND over Neufert's 3.0 aspect cap (3.67). `_legal_1`
+    catches it downstream so the solver is never offered that shape, which is why
+    it has never mattered. The oracle sweep therefore runs on legal shapes only.
+  - **The four cutters do not share a tie-break rule**, so no single canonical
+    enumeration order reproduces all four on `_cut_score` ties.
+    `_slice_children` prefers the MOST EVEN split; `_split_off_wc`,
+    `_slice_kitchen` and `_slice_master` prefer the SMALLEST ancillary strip. At
+    entry 1.5 × 7.0 the two rules give Foyer 4.50/WC 3.00 versus Foyer 5.25/WC
+    2.25, **both scoring exactly 1242** — two tier-3 rooms splitting a fixed area
+    have constant weighted excess. The objective cannot tell them apart, so a
+    general subdivider must choose per room role rather than inherit four loop
+    orders.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not

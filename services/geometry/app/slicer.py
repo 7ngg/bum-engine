@@ -713,6 +713,20 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
             msg = _degradation_warning(z, zr, cut)
             if msg is not None:
                 degraded.append(msg)
+            # And the other half of the same discipline: the cut is COMPLETE
+            # above, but is it the cut the objective was scored on? See
+            # _penalty_disagreement -- silent when they agree, which is always
+            # today, so this changes no current output.
+            msg = _penalty_disagreement(
+                z, zr,
+                cut,
+                kl_side if z == "kitchen_laundry"
+                else entry_side if z == "entry"
+                else child_corridor_side if z == "children"
+                else None,
+            )
+            if msg is not None:
+                degraded.append(msg)
             rooms += cut
         elif z in _SIMPLE_NAME:
             name, cat = _SIMPLE_NAME[z]
@@ -1069,6 +1083,73 @@ def _degradation_warning(zone_id: str, zr: ZoneRect, emitted: list[FinalRoom]) -
         f"{len(emitted)} room(s) instead of {len(members)}. legal_pairs()/_legal_1 is "
         f"supposed to keep this shape away from the solver, so this is a solver/slicer "
         f"disagreement rather than a zone that is merely small."
+    )
+
+
+def _penalty_table(zone_id: str) -> dict:
+    """cut_penalty_pairs as a {(w, h[, ns]): penalty} lookup, built off the same
+    cached table the solver consumed — so it cannot disagree with what was
+    optimised for any reason other than the one this exists to catch.
+
+    Deliberately NOT cached itself. The table is at most 76 entries and this runs
+    a handful of times per layout, so building it is free; a second cache would
+    only add a way to go stale when _PENALTY_CACHE is cleared and this one is
+    not, which is precisely the class of silent drift the check is here to
+    prevent."""
+    pairs = cut_penalty_pairs(zone_id)
+    return {t[:-1]: t[-1] for t in pairs} if pairs else {}
+
+
+def _penalty_disagreement(
+    zone_id: str, zr: ZoneRect, cut: list[FinalRoom], side: str | None
+) -> str | None:
+    """THE BUILD-TIME / SLICE-TIME CONTRACT, asserted rather than assumed.
+
+    cut_penalty_pairs() tabulates, per legal zone SHAPE, the tier-weighted
+    distance-from-ideal of the cut the slicer WILL perform, and solver.py puts
+    that number straight into the objective via AddAllowedAssignments. So the
+    objective is minimising a value computed at MODEL-BUILD time for a cut
+    performed later, at SLICE time. Nothing checked that the two agree.
+
+    Today they do, and for two specific reasons that are easy to break:
+      1. _best_cut is a deterministic `min` with a documented stable tie-break, so
+         the same shape always yields the same cut; and
+      2. the axial zones are tabulated on ONE representative side per axis, which
+         is exact only because the other side is the same cut mirrored --
+         _slice_kitchen's place_side, _slice_master's "N" flip and
+         _split_off_wc's mud_side all swap WHICH END a band takes, never its size
+         (cut_penalty_pairs' docstring states this).
+    A search-based subdivider (see app/subdivide.py) can break either one
+    silently. _degradation_warning cannot catch it: that fires when a ROOM GOES
+    MISSING, never when a room is merely a different SIZE than the number the
+    solver optimised. This closes exactly that gap.
+
+    Returns None when the two agree (the normal case, so this adds no output to
+    any current plan), when the zone is not composite, or when the shape is not
+    in the table at all -- that last case is a solver/slicer disagreement of a
+    different kind and _degradation_warning already names it.
+    """
+    tab = _penalty_table(zone_id)
+    if not tab:
+        return None
+    x0, y0, x1, y1 = zr.rect_m
+    wu, hu = int(round((x1 - x0) / GRID_M)), int(round((y1 - y0) / GRID_M))
+    key = (wu, hu, 1 if side in ("N", "S") else 0) if _is_axial(zone_id) else (wu, hu)
+    tabulated = tab.get(key)
+    if tabulated is None:
+        return None
+    below, above = _cut_score([(r.name, r.rect) for r in cut])
+    actual = below + above
+    if actual == tabulated:
+        return None
+    return (
+        f"slicer: zone {zone_id!r} at {x1 - x0:.1f} x {y1 - y0:.1f} m was optimised "
+        f"against a tabulated cut penalty of {tabulated} but the cut actually "
+        f"performed scores {actual} (shortfall {below}, excess {above}). The "
+        f"objective therefore ranked this plan on a cut the slicer did not build. "
+        f"Read it as cut_penalty_pairs() and the cutter having drifted apart -- "
+        f"either the cut stopped being a deterministic function of the zone shape, "
+        f"or an axial zone's two sides stopped being exact mirrors of each other."
     )
 
 
