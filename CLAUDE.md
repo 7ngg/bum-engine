@@ -452,7 +452,107 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
     2.25, **both scoring exactly 1242** — two tier-3 rooms splitting a fixed area
     have constant weighted excess. The objective cannot tell them apart, so a
     general subdivider must choose per room role rather than inherit four loop
-    orders.
+    orders. One rule is now proposed and measured — see `placement.py`.
+
+  **AND `_slice_entry` NO LONGER EMITS AN OUT-OF-BAND MUDROOM** (fixed, same
+  round). It took `depth = _ceil_snap(mud.min_w_m)` and emitted the strip
+  unconditionally, so a 3.0 × 5.5 entry zone produced a 1.5 × 5.5 = 8.25 m²
+  Mudroom — over the architect's 8 m² ceiling *and* over Neufert's 3.0 aspect cap
+  (3.67). It never shipped because `_legal_1` rejects any cut with an out-of-band
+  room, and the fix is verified inert: `legal_pairs('entry')` is still 25 shapes
+  with an identical signature, identical members, identical band and an identical
+  74730 penalty sum.
+- **`placement.py`** — THE PLACEMENT FILTER: the constraints the four cutters
+  hold *by construction*, restated as explicit predicates over an enumerated
+  candidate. `violations(cand, rect, ctx) -> list[str]`, each tagged C1..C19 so
+  eliminations are countable; `filter_candidates` applies it. MACHINERY ONLY,
+  like `subdivide` — not wired into `slice_zones`. `Context` carries
+  `corridor_side` / `director_side` / `exterior_faces`, and **an absent field
+  disables its rules rather than guessing** — a `legal_pairs` probe genuinely
+  does not know where the corridor is.
+
+  **THE HEADLINE: THE FILTER COSTS NO DIVERSITY.** At the shipped 208 gW_eN
+  arrangement, 48 alternatives → 32 after filtering → 20 rebuild
+  validator-clean → **12 score `_facade_distance` > 0. All 12 that were visible
+  before the filter are still visible after it.** The filter drops 33% of
+  candidates, 4 of 24 clean plans, and **zero visible ones**. So subdivision
+  diversity is *not* constraint-limited, and enumerator + filter is a viable
+  production path.
+
+  | zone | rect | cutter | enum | filtered | biggest eliminator |
+  |---|---|---|---|---|---|
+  | kitchen_laundry | 4.5×4.0 | 1 | 2 | 1* | C13 2/2 |
+  | master_suite | 5.5×6.0 | 4 | 32 | 24 | **C1 8/32, sole cause for all 8** |
+  | children | 4.0×8.0 | 1 | 6 | 2 | C17 & C14, 4/6 (same candidates) |
+  | entry | 5.5×2.0 | 1 | 12 | 8* | **C18 8/12, sole cause for 6** |
+
+  \* excluding the two known-live-defect codes; see below. **C2 (ensuite
+  parents) eliminates nothing anywhere** — the cuts already satisfy it.
+
+  **THE FILTER INDEPENDENTLY REPRODUCES TWO DOCUMENTED LIVE DEFECTS**, from
+  geometry alone, and this is its strongest validation:
+  - **C13 daylight** → the Kitchen holds 0.00 m of exterior face, matching
+    `validate()`'s `room 'Kitchen' requires an exterior wall but has only 0.00 m
+    of true building-perimeter wall` and
+    `test_kitchen_requires_exterior_wall_KNOWN_LIVE_DEFECT`.
+  - **C18 director face** → the **Laundry**, not the Kitchen, holds the dining
+    face, on both presets. `solver._force_kitchen_holds_dining_face` exists to
+    forbid exactly this and is OFF (`_KITCHEN_DINING_FACE = False`); its
+    docstring records the same measurement.
+
+  Both are excluded from the "cutter's pick survives" oracle by name
+  (`KNOWN_LIVE_DEFECT_CODES`) and asserted *positively* in their own test, so a
+  fix shows up as a test failure rather than as silence.
+
+  **THREE CONSTRAINTS BEYOND THE SIXTEEN, found while implementing.** **C17**
+  per-room `requires_circulation_access` (C1 only ever constrained one room per
+  zone) — deliberately weak, checking reachability without crossing a *habitable*
+  room, which is `validate_plan`'s real rule, because demanding a corridor wall
+  would forbid the children beds being reached through their Bathroom, a routing
+  `_force_vertical_cover_center` intends. **C18** the *director* face (Kitchen on
+  Dining, Mudroom on Garage) — same shape as C1 but a different director, so it
+  is not C1. **C19** a door needs a wall (`MIN_ACCESS_WALL_M`). And **one of the
+  sixteen is not a placement constraint at all**: C12 "geometric room order" is a
+  convention `_split_off_wc` documents for its own 1-D strip pair and does not
+  generalise — `_slice_master` under an "N" corridor returns
+  `[Bathroom, Closet, Bedroom]` where a global `(x0, y0)` sort gives
+  `[Bathroom, Bedroom, Closet]`, and nothing downstream reads the order.
+
+  **C11 ORIENTATION is per-room data, and getting it wrong is expensive.**
+  `ROTATABLE = {"Bathroom"}` — only the room the shipping code already rotates
+  (`_slice_children_ns`, whose docstring explains why). Measured over the probe
+  range, treating every room as freely rotatable would additionally admit
+  **28 Garages**, i.e. exactly the "5.0-wide × 3.0-deep, too shallow to park in"
+  case the Garage standard warns about; and only 4 extra Bathrooms, 7 Kitchens,
+  6 each for Closet/Foyer/Mudroom. The policy lives in `placement.py`, NOT in
+  `standards.py`: an orientation field there would change `_room_legal` →
+  `_in_band` → `legal_pairs` → the solver's shape table → the golden.
+
+  **C15 — THE GUARANTEE VECTOR IS NOT CONSTANT PER SHAPE, and that answers the
+  porting question.** `guarantee_vector` publishes, per room per face,
+  `(offset, depth, run)` — `offset` being exactly what
+  `_force_corridor_overlaps_kitchen`'s `l_ns`/`l_we` and
+  `_force_backbone_reaches_foyer`'s `mud_x`/`mud_y` are today. Across the
+  *admissible set* at one shape it varies (master_suite: 20 distinct values for
+  the Bathroom, 4 for the Bedroom; entry: 8 for the Mudroom). So the six solver
+  constraints **cannot** reify off a constant — but they can port, because
+  `cut_penalty_pairs` already collapses each shape to ONE cut via `_best_cut`,
+  and the vector is constant given that choice. The port is therefore: keep the
+  choice deterministic at table-build time (which `_penalty_disagreement` already
+  guards) and add the offsets as further columns of the existing
+  `AddAllowedAssignments` table. If instead multiple candidates per shape are
+  exposed for diversity, the candidate index becomes a decision variable — the
+  same idiom as the existing `ns` column. Not ported in this round.
+
+  **THE TIE-BREAK: one rule proposed, NOT APPLIED.** `tier_tie_break_key` reads
+  Ruling 2 as a per-tier lexicographic comparison, then minimax within a tier
+  (the worst-off room least badly off), then geometry. It derives *both*
+  exemplars that currently disagree — `_slice_children`'s even split and
+  `_split_off_wc`'s smallest strip. But swept over `_STEPS²` it picks a different
+  tied candidate on **115 master_suite shapes, 6 children, 4 entry** (0 for
+  kitchen_laundry, which has no ties at all). Every one is a `_cut_score` tie, so
+  the objective is indifferent and no ranking would move — but the geometry
+  would, so it is measured and flagged rather than wired in.
 - **`validator.py`** — the gate and the test oracle. Hard-rejects: any
   overlap, any room below `MIN_ROOM_M=0.9`, coverage below `0.9`, a forbidden
   pair touching (master↔kitchen, garage↔living — checked by room *name*, not

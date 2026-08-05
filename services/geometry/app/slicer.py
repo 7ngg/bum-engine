@@ -622,6 +622,18 @@ def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
             mx = x1 - depth
             mud_room = FinalRoom("Mudroom", "service", r.zone, (mx, y0, x1, y1))
             rest = (x0, y0, mx, y1)
+        # THE MUDROOM IS THE ONE SUB-ROOM NOTHING BAND-CHECKED. Its depth is a
+        # fixed _ceil_snap with no search behind it, so on a deep zone the strip
+        # runs the whole depth and blows through its own limits: at a 3.0 x 5.5
+        # entry zone this emitted 1.5 x 5.5 = 8.25 m2, over the architect's 8 m2
+        # ceiling AND over Neufert's 3.0 aspect cap (5.5/1.5 = 3.67). It never
+        # shipped, because _legal_1 rejects any shape whose cut has an
+        # out-of-band room and legal_pairs therefore never offers it to the
+        # solver -- so this changes no output and no legal shape. It closes a
+        # latent trap: the check that caught it lives downstream, and every other
+        # cutter tests its own rooms as it builds them.
+        if not _in_band("Mudroom", mud_room.rect):
+            return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
         # W/E cut -> the Mudroom strip runs the full depth, so the WC splits the
         # remainder along y (south end), keeping the Foyer's north wall free.
         # `mud_side` matters only if that fails and the x fallback runs: there the
@@ -642,6 +654,8 @@ def _slice_entry(r: ZoneRect, side: str | None) -> list[FinalRoom]:
         my = y1 - depth
         mud_room = FinalRoom("Mudroom", "service", r.zone, (x0, my, x1, y1))
         rest = (x0, y0, x1, my)
+    if not _in_band("Mudroom", mud_room.rect):  # see the W/E branch above
+        return [FinalRoom("Foyer", "circ", r.zone, (x0, y0, x1, y1))]
     # N/S cut -> the Mudroom strip runs the full width, so the WC splits the
     # remainder along x (west end); the y fallback takes the end away from the
     # Mudroom (see _split_off_wc's `mud_side`).
