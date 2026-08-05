@@ -737,6 +737,182 @@ def _force_backbone_reaches_foyer(
         m.AddBoolOr(opts)
 
 
+def _force_entry_rooms_reach_corridor(
+    m: cp_model.CpModel,
+    entry: _ZoneVars,
+    corr: _ZoneVars,
+    gside: dict[str, cp_model.IntVar],
+    mud_x: int,
+    mud_y: int,
+    foy_w: int,
+    foy_h: int,
+    door_u: int,
+    tag: str,
+    want_mudroom: bool,
+    want_foyer: bool,
+) -> None:
+    """THE ENTRY JUNCTION (architect review of the subdivision-variant SVGs,
+    2026-08-05, complaint 1). Room-level Foyer<->Corridor (F) and
+    Mudroom<->Corridor (M) contact, each >= a door width.
+
+    HIS WORDS, verbatim: "Eve girisden korodora birbasa kecid olmalidi. Adam
+    mecburduki mudrooma kecsin sonra karidora getsin. Mudroom ve foye ikiside
+    coridora kecmelidi." -- there must be a DIRECT passage from the entry to the
+    corridor; today a person is forced through the Mudroom to reach it; BOTH the
+    Mudroom and the Foyer must connect to the corridor.
+
+    MEASURED BEFORE BUILDING (2026-08-05, roomy @208, all four presets, workers=1,
+    seed 1). On the three shipping presets the corridor is 1.50 x 8.00 and its
+    ONLY shared boundary with the entry zone is its top edge, whose length IS the
+    corridor's width. The entry strip lies along that edge as
+    Mudroom | Foyer | Guest WC, so the corridor's 1.50 m lands entirely on the
+    Mudroom: Corridor<->Mudroom 1.50 m, Corridor<->Foyer 0.00 m -- they meet at
+    the single corner point (14.0, 19.0). Two rooms each needing >= 0.90 m of a
+    1.50 m edge is arithmetically impossible, so F+M is a request for a WIDER
+    CORRIDOR (>= 1.80 m, i.e. >= 2.00 m on the 0.5 m grid) unless the packing
+    finds a topology where the corridor meets the entry on its LONG face instead.
+
+    WHY THIS IS NOT _force_backbone_reaches_foyer AGAIN. That one is a
+    DISJUNCTION over (circulation, living) and it only has to land the contact on
+    the Mudroom band, because its job is to keep the access-tree root connected.
+    This is a hard, specific entry<->CIRCULATION share that BOTH sub-rooms must
+    hold. Its docstring's warning stands and is why these are flags: a hard-forced
+    entry<->corridor edge was INFEASIBLE on the entry-west presets once before.
+
+    THE MUDROOM BAND IS EXACT; THE FOYER'S IS A CONSERVATIVE CORE, and that
+    distinction is the whole difficulty. `_slice_entry` cuts the Mudroom at a
+    constant `_ceil_snap(min dim)` from the garage end -- exactly `mud_x`/`mud_y`
+    here, the same constants `_force_backbone_reaches_foyer` reifies off. The
+    FOYER's own band is NOT constant: `_split_off_wc` SEARCHES the Guest WC's
+    strip depth on the grid, and it searches it on EITHER axis (the preferred
+    axis, then a fallback). Measured over the whole 25-row `legal_pairs('entry')`
+    table, both happen in production: the emitted order is
+    (Mudroom, Foyer, Guest WC) for some shapes and (Mudroom, Guest WC, Foyer) --
+    i.e. stacked on the other axis -- for others, and the WC comes out
+    1.5x1.5, 1.5x2.0 AND 2.0x1.5. So there is no constant Foyer offset to reify.
+
+    What IS constant is the INTERSECTION of the two possible Foyer positions,
+    because each is pinned against the Mudroom by an invariant `_split_off_wc`
+    already guarantees (FOYER ALWAYS ADJACENT TO MUDROOM) and floored by the
+    Foyer's own grid-ceiled minimum:
+      - preferred axis -> the Foyer keeps >= `foy_h` on one axis, flush with the
+        zone face opposite the Mudroom's own cut direction;
+      - fallback axis  -> the Foyer keeps >= `foy_w` on the other, flush against
+        the Mudroom.
+    Their intersection is a `foy_w` x `foy_h` rectangle at a CONSTANT offset from
+    the garage-side corner, and it is contained in the real Foyer under BOTH
+    cuts. It is the tightest constant-offset under-approximation available, so
+    this constraint is SOUND (never admits a plan whose Foyer misses the
+    corridor) and CONSERVATIVE (may refuse a plan whose actual cut would have
+    worked). The alternative -- exposing the WC's axis as a solver decision
+    variable, the way kitchen_laundry's `ns` is exposed -- is a model change of
+    its own and deliberately not attempted here.
+
+    Encoding, per band, uniformly over the four contact faces: the band must be
+    FLUSH with the face the corridor arrives on, and the corridor's shared
+    segment must cover >= `door_u` of the band's extent along that face. Writing
+    the flush test as an equality on solver vars rather than hand-enumerating the
+    (garage side x face) cases is what keeps the impossible combinations out
+    without a table to get wrong: `bx1 == entry.x1` is simply unsatisfiable when
+    the band is the west Mudroom strip, so CP-SAT drops that config itself.
+    """
+    BIG = 10_000
+
+    def iv(name: str) -> cp_model.IntVar:
+        # SIGNED domain. The band corners are affine expressions like
+        # `entry.y1 - mud_y - foy_h`, which is negative for a zone sitting near
+        # the origin -- and a var declared [0, BIG] would make that equality
+        # UNSATISFIABLE, i.e. the constraint would report a spurious INFEASIBLE
+        # for a reason no reader could see. Caught by the over-approximation
+        # control probe, where it silently inverted the result.
+        return m.NewIntVar(-BIG, BIG, f"{tag}_{name}")
+
+    def clamp_lo(name: str, a, b) -> cp_model.IntVar:
+        """max(a, b) as a plain var (the Max/Min equalities do not take affine)."""
+        v = iv(name)
+        m.AddMaxEquality(v, [a, b])
+        return v
+
+    def clamp_hi(name: str, a, b) -> cp_model.IntVar:
+        v = iv(name)
+        m.AddMinEquality(v, [a, b])
+        return v
+
+    def aff(name: str, expr) -> cp_model.IntVar:
+        v = iv(name)
+        m.Add(v == expr)
+        return v
+
+    # affine corners, shared by every band below
+    ex0_p_m = aff("ex0pm", entry.x0 + mud_x)     # west Mudroom's inner edge
+    ex1_m_m = aff("ex1mm", entry.x1 - mud_x)     # east Mudroom's inner edge
+    ey0_p_m = aff("ey0pm", entry.y0 + mud_y)     # south Mudroom's inner edge
+    ey1_m_m = aff("ey1mm", entry.y1 - mud_y)     # north Mudroom's inner edge
+
+    # Per garage side: the Mudroom band and the Foyer core, as (x0, x1, y0, y1).
+    # See the docstring for how each core is derived from the two possible cuts.
+    bands: dict[str, dict[str, tuple]] = {
+        "W": {
+            "Mudroom": (entry.x0, ex0_p_m, entry.y0, entry.y1),
+            "Foyer": (
+                ex0_p_m, clamp_hi("fWx1", entry.x1, aff("fWx1a", ex0_p_m + foy_w)),
+                clamp_lo("fWy0", entry.y0, aff("fWy0a", entry.y1 - foy_h)), entry.y1,
+            ),
+        },
+        "E": {
+            "Mudroom": (ex1_m_m, entry.x1, entry.y0, entry.y1),
+            "Foyer": (
+                clamp_lo("fEx0", entry.x0, aff("fEx0a", ex1_m_m - foy_w)), ex1_m_m,
+                clamp_lo("fEy0", entry.y0, aff("fEy0a", entry.y1 - foy_h)), entry.y1,
+            ),
+        },
+        "S": {
+            "Mudroom": (entry.x0, entry.x1, entry.y0, ey0_p_m),
+            "Foyer": (
+                clamp_lo("fSx0", entry.x0, aff("fSx0a", entry.x1 - foy_w)), entry.x1,
+                ey0_p_m, clamp_hi("fSy1", entry.y1, aff("fSy1a", ey0_p_m + foy_h)),
+            ),
+        },
+        "N": {
+            "Mudroom": (entry.x0, entry.x1, ey1_m_m, entry.y1),
+            "Foyer": (
+                clamp_lo("fNx0", entry.x0, aff("fNx0a", entry.x1 - foy_w)), entry.x1,
+                clamp_lo("fNy0", entry.y0, aff("fNy0a", ey1_m_m - foy_h)), ey1_m_m,
+            ),
+        },
+    }
+
+    wanted = [r for r, on in (("Mudroom", want_mudroom), ("Foyer", want_foyer)) if on]
+    if not wanted:
+        return
+
+    sb: dict[str, cp_model.IntVar] = {}
+    share = _share_wall(m, corr, entry, door_u, f"{tag}_share", sb)
+    m.Add(share == 1)
+
+    for g, gv in gside.items():
+        for room in wanted:
+            bx0, bx1, by0, by1 = bands[g][room]
+            key = f"{tag}_{g}_{room[:3]}"
+            # the corridor's shared segment, clipped to the band, on each axis
+            ylo = clamp_lo(f"{key}_ylo", corr.y0, by0)
+            yhi = clamp_hi(f"{key}_yhi", corr.y1, by1)
+            xlo = clamp_lo(f"{key}_xlo", corr.x0, bx0)
+            xhi = clamp_hi(f"{key}_xhi", corr.x1, bx1)
+            # corridor WEST of entry -> contact on the entry's west face
+            m.Add(bx0 == entry.x0).OnlyEnforceIf([sb["W"], gv])
+            m.Add(yhi - ylo >= door_u).OnlyEnforceIf([sb["W"], gv])
+            # corridor EAST
+            m.Add(bx1 == entry.x1).OnlyEnforceIf([sb["E"], gv])
+            m.Add(yhi - ylo >= door_u).OnlyEnforceIf([sb["E"], gv])
+            # corridor SOUTH
+            m.Add(by0 == entry.y0).OnlyEnforceIf([sb["S"], gv])
+            m.Add(xhi - xlo >= door_u).OnlyEnforceIf([sb["S"], gv])
+            # corridor NORTH
+            m.Add(by1 == entry.y1).OnlyEnforceIf([sb["N"], gv])
+            m.Add(xhi - xlo >= door_u).OnlyEnforceIf([sb["N"], gv])
+
+
 def _force_kitchen_holds_dining_face(
     m: cp_model.CpModel,
     dining_side: dict[str, cp_model.IntVar],
@@ -939,6 +1115,18 @@ _CHILD_CENTER_COVER: bool = True
 # dee5a7c model exactly.
 _WET_CORE: bool = False             # _force_guest_wc_reaches_wet_core
 _KITCHEN_DINING_FACE: bool = False  # _force_kitchen_holds_dining_face
+
+# ENTRY JUNCTION (architect review of the subdivision-variant SVGs, 2026-08-05),
+# complaint 1, verbatim: "Eve girisden korodora birbasa kecid olmalidi. Adam
+# mecburduki mudrooma kecsin sonra karidora getsin. Mudroom ve foye ikiside
+# coridora kecmelidi." -- there must be a DIRECT passage from the entry to the
+# corridor; today a person is forced through the Mudroom to reach it; BOTH the
+# Mudroom and the Foyer must connect to the corridor.
+#
+# Two arms of the same constraint (_force_entry_rooms_reach_corridor), so the
+# sweep can price them apart. See that function for the geometry.
+_ENTRY_FOYER_CORRIDOR: bool = False    # F: Foyer   <-> Corridor >= ACCESS_DOOR_M
+_ENTRY_MUDROOM_CORRIDOR: bool = False  # M: Mudroom <-> Corridor >= ACCESS_DOOR_M
 
 _REQUIRED_PAIRS: set[frozenset] = {frozenset(p) for p in Z.REQUIRED_ADJ}
 # The access graph (Task 5 Phase 2) uses only relaxed disjunctions, so no pair is
@@ -1352,6 +1540,24 @@ def _solve_once(
                 _ceil_u(standards.ROOMS["Mudroom"].min_h_m),
                 door_u, "acc_entry",
             )
+            # THE ENTRY JUNCTION (architect, 2026-08-05, complaint 1): the
+            # backbone constraint above only promises the entry ZONE reaches ONE
+            # of {corridor, living}, landing on the MUDROOM band. He wants both
+            # entry rooms on the corridor specifically. Same constant-offset
+            # reification, one band per room, and the Foyer's band is a
+            # conservative core because `_split_off_wc` searches the WC strip on
+            # BOTH axes -- see _force_entry_rooms_reach_corridor.
+            if (_ENTRY_FOYER_CORRIDOR or _ENTRY_MUDROOM_CORRIDOR) and circ in zv:
+                _force_entry_rooms_reach_corridor(
+                    m, zv["entry"], zv[circ], cut_axis_bools["entry"],
+                    _ceil_u(standards.ROOMS["Mudroom"].min_w_m),
+                    _ceil_u(standards.ROOMS["Mudroom"].min_h_m),
+                    _ceil_u(standards.ROOMS["Foyer"].min_w_m),
+                    _ceil_u(standards.ROOMS["Foyer"].min_h_m),
+                    door_u, "junc_entry",
+                    want_mudroom=_ENTRY_MUDROOM_CORRIDOR,
+                    want_foyer=_ENTRY_FOYER_CORRIDOR,
+                )
         else:
             # no garage -> no recorded cut axis -> no known Mudroom end. Fall back
             # to the zone-level attach rather than guessing which end it took.
