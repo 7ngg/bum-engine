@@ -641,6 +641,10 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   **P alone changes NO geometry at all** — same objective to ten decimals, same
   rects, same corridor, `validate().ok` with the same three warnings, every
   must-not-regress item passing — and it kills the Foyer→Bedroom 3 door outright.
+  Re-measured on **seeds 1–5 × both presets × BOTH fixtures** (roomy @208 and
+  `program.example.json` @184): objective identical in all 20 pairs, 16/16
+  reachable, `validate().ok`, Bedroom 3 reparented Foyer/d1 → Corridor/d3 and the
+  Foyer→Bedroom 3 door absent in every one. The defect is not roomy-specific.
   It is a pure door-set change. **M alone buys nothing**, because
   `_force_backbone_reaches_foyer` already lands 1.50 m of Mudroom on the
   corridor: same objective, same zone shapes, same validity at every rung.
