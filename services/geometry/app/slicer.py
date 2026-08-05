@@ -735,7 +735,26 @@ _SIMPLE_NAME: dict[str, tuple[str, Category]] = {
 }
 
 
-def slice_zones(result: SolveResult) -> list[FinalRoom]:
+def slice_zones(
+    result: SolveResult, overrides: dict[str, list[FinalRoom]] | None = None
+) -> list[FinalRoom]:
+    """`overrides` replaces a composite zone's cut with a caller-supplied one.
+
+    Default None reproduces today's behaviour exactly -- the four cutters decide
+    every zone -- and that is the ONLY path any production solve takes. It exists
+    for generate.subdivision_variants, which rebuilds the SAME solved arrangement
+    with an alternative subdivision so a caller can be offered plans that differ
+    inside a zone rather than only in handedness.
+
+    The two guards below are deliberately NOT skipped for an override.
+    `_degradation_warning` still checks the room set is complete, and
+    `_penalty_disagreement` still checks the cut scores what the solver
+    optimised -- which for an override is a real question, not a formality, since
+    an alternative that scores differently would make the plan's reported
+    objective wrong. subdivision_variants only ever offers score-EQUAL
+    alternatives for exactly that reason, so both stay silent; if either fires,
+    the caller broke the contract and will hear about it."""
+    overrides = overrides or {}
     by_zone = {r.zone: r for r in result.rects}
     dining = by_zone.get("dining")
     garage = by_zone.get("garage")
@@ -766,7 +785,9 @@ def slice_zones(result: SolveResult) -> list[FinalRoom]:
     for zr in result.rects:
         z = zr.zone
         if z in _COMPOSITE:
-            if z == "master_suite":
+            if z in overrides:
+                cut = list(overrides[z])
+            elif z == "master_suite":
                 cut = _slice_master(zr, master_corridor_side)
             elif z == "children":
                 cut = _slice_children(zr, child_corridor_side)
@@ -2438,8 +2459,13 @@ def _build_terrace(
 # ---------------------------------------------------------------------------
 
 
-def build_layout(result: SolveResult, program: Program, wall_height_m: float = 2.7) -> Layout:
-    rooms = slice_zones(result)
+def build_layout(
+    result: SolveResult,
+    program: Program,
+    wall_height_m: float = 2.7,
+    overrides: dict[str, list[FinalRoom]] | None = None,
+) -> Layout:
+    rooms = slice_zones(result, overrides)
     recs = _build_walls(rooms, result.plot_w_m, result.plot_d_m, wall_height_m)
     doors, entry, warnings = _build_doors(rooms, recs)
     windows = _build_windows(rooms, recs)

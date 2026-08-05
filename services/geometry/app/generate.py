@@ -8,14 +8,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import placement, subdivide
 from .models import Layout, Program
 from .presets import PRESETS
-from .solver import KITCHEN_FALLBACK_TAG, solve
-from .slicer import build_layout
+from .solver import KITCHEN_FALLBACK_TAG, SolveResult, solve
+from .slicer import FinalRoom, _cut_score, build_layout, zone_members
 from .svg import render
 from .validator import validate
+from .zones import COMPOSITE_ZONES
 
 DEFAULT_SEEDS = [1, 2, 3, 4]
+
+# Composite zones in a FIXED order, so the alternatives a program yields are a
+# deterministic function of the program and the seed.
+_COMPOSITE_ORDER = tuple(z for z in ("kitchen_laundry", "master_suite",
+                                     "children", "entry")
+                         if z in COMPOSITE_ZONES)
 
 
 @dataclass
@@ -29,12 +37,21 @@ class Variant:
     # orientations" rather than presenting them as two designs. Set by generate();
     # a hand-built Variant defaults to 0.
     arrangement: int = 0
+    # Which SUBDIVISION of that arrangement this plan is, 0-based, 0 = the cut
+    # the four cutters produce. A SEPARATE field on purpose: `arrangement`
+    # answers "same zone layout?" and two plans that differ only inside a zone
+    # genuinely ARE the same zone layout, so overloading it would make the field
+    # lie in the one case it exists to describe. The pair
+    # (arrangement, subdivision) identifies a plan; `arrangement` alone still
+    # answers the handedness question it always did.
+    subdivision: int = 0
 
     def to_dict(self) -> dict:
         d = self.layout.dump()
         d["svg"] = self.svg
         d["coverage"] = round(self.coverage, 4)
         d["arrangement"] = self.arrangement
+        d["subdivision"] = self.subdivision
         return d
 
 
@@ -187,6 +204,159 @@ def _facade_distance(a: Variant, b: Variant) -> int:
     )
 
 
+def _rect_multiset(layout: Layout, mx: bool, my: bool) -> list[tuple]:
+    """Every room's rect, normalised to the house's own bounding box and
+    optionally mirrored. NAMES ARE DELIBERATELY DROPPED — see _plan_distance."""
+    rects = [r.rect_m for r in layout.rooms]
+    bx0 = min(r[0] for r in rects)
+    by0 = min(r[1] for r in rects)
+    w = max(r[2] for r in rects) - bx0
+    h = max(r[3] for r in rects) - by0
+    out = []
+    for x0, y0, x1, y1 in rects:
+        a, b = x0 - bx0, x1 - bx0
+        c, e = y0 - by0, y1 - by0
+        if mx:
+            a, b = w - b, w - a
+        if my:
+            c, e = h - e, h - c
+        out.append((round(a, 3), round(c, 3), round(b, 3), round(e, 3)))
+    return sorted(out)
+
+
+def _subdivision_key(layout: Layout) -> tuple:
+    """Canonical identity of the plan's ROOM geometry, up to the same four
+    symmetries `_arrangement_key` uses — so the same cut seen mirrored is one
+    subdivision, and a pure relabelling (children's Bedroom 2/3 swap) is too."""
+    return min(tuple(_rect_multiset(layout, mx, my))
+               for mx in (False, True) for my in (False, True))
+
+
+def _geometry_mismatch(ga: list[tuple], gb: list[tuple]) -> int:
+    """How many of `ga`'s rects have no counterpart in `gb` (with multiplicity)."""
+    from collections import Counter
+
+    ca, cb = Counter(ga), Counter(gb)
+    return sum((ca - cb).values())
+
+
+def _plan_distance(a: Variant, b: Variant) -> int:
+    """How different two plans LOOK: facade-role mismatches PLUS rooms whose
+    rectangle has no counterpart in the other plan — both measured under the SAME
+    symmetry, minimised over the four isometries of a rectangle.
+
+    WHY _facade_distance ALONE IS NOT ENOUGH ANY MORE. It was built to compare
+    plans that differ in ZONE placement and it answers exactly that: which room
+    sits on which face of the house. Subdivision alternatives at a single
+    arrangement routinely change no facade role at all, so it scores them 0 and
+    _pick_distinct drops them as duplicates. Measured on roomy @208, of the five
+    score-equal alternatives the filter accepts, TWO are visibly different plans
+    that it cannot see: the master service strip's divider moving 0.5 m (Master
+    Bathroom 7.50 <-> 6.25 against the Walk-in Closet) and the entry's moving
+    0.5 m (Mudroom 3.00 -> 4.00 against the Foyer). Both are real to anyone
+    reading the drawing.
+
+    WHY NAMES ARE DROPPED FROM THE GEOMETRY TERM, which is the other half and the
+    part that keeps this honest. The children zone offers an alternative in which
+    Bedroom 2 and Bedroom 3 SWAP: identical rectangles, identical areas, only the
+    two labels exchanged. The drawing is byte-identical. A name-keyed measure
+    would score that 2 and ship a relabelling as a second design; comparing rect
+    MULTISETS scores it 0 and it is correctly dropped. So this extension makes
+    the measure see more, not simply see differently — the one relabelling in the
+    set stays invisible, exactly as it should.
+
+    Both terms use the same (mx, my) so the minimum is coherent; taking each
+    term's own minimum over different symmetries would be comparing two plans in
+    two orientations at once. The symmetry minimisation itself is inherited from
+    _facade_distance, and it is load-bearing for the reason recorded there: a
+    near-mirror must not score as maximally distant."""
+    ra, rb = _facade_roles(a.layout), _facade_roles(b.layout)
+    keys = set(ra) | set(rb)
+    ga = _rect_multiset(a.layout, False, False)
+    return min(
+        sum(1 for k in keys if ra.get(k, "") != _flip_role(rb.get(k, ""), mx, my))
+        + _geometry_mismatch(ga, _rect_multiset(b.layout, mx, my))
+        for mx in (False, True)
+        for my in (False, True)
+    )
+
+
+def subdivision_variants(
+    result: SolveResult, base: Layout
+) -> list[tuple[str, dict[str, list[FinalRoom]]]]:
+    """Alternative subdivisions of an ALREADY-SOLVED arrangement: (zone, override)
+    pairs whose layout the validator passes with no errors.
+
+    One composite zone is varied at a time, against the solved rectangles the
+    solver already committed to. No re-solve happens and no shape table is
+    touched, so this cannot move the packing, the objective or the golden.
+
+    THE SCORE-EQUAL RESTRICTION IS THE LOAD-BEARING PART. Only alternatives whose
+    `_cut_score` equals the default cut's are offered. The solver's objective
+    contains a `cut_penalty` term tabulated for the cut it expected, so an
+    alternative scoring differently would make the variant's reported objective
+    wrong for that variant — and `slicer._penalty_disagreement` would say so,
+    correctly. Restricting to ties means every returned plan carries the solve's
+    own objective exactly, with every term identical, and that guard stays silent
+    by construction rather than by suppression.
+
+    Measured on roomy @208, both presets: 25 alternatives pass the placement
+    filter, 5 of them are score-equal, and all 5 rebuild validator-clean."""
+    out: list[tuple[str, dict[str, list[FinalRoom]]]] = []
+    fx0, fy0, fx1, fy1 = result.footprint_m or (0.0, 0.0, 0.0, 0.0)
+    by_zone = {z.zone: z for z in result.rects}
+    default: dict[str, list[FinalRoom]] = {}
+    for rm in base.rooms:
+        if rm.zone in _COMPOSITE_ORDER:
+            default.setdefault(rm.zone, []).append(
+                FinalRoom(rm.name, rm.category, rm.zone, tuple(rm.rect_m))
+            )
+    for zone in _COMPOSITE_ORDER:
+        zr = by_zone.get(zone)
+        base_cut = default.get(zone)
+        if zr is None or not base_cut:
+            continue
+        rect = tuple(zr.rect_m)
+        members = zone_members(zone)
+        if len(base_cut) < len(members):
+            continue  # the default cut degraded here; nothing to vary
+        base_score = _cut_score([(r.name, r.rect) for r in base_cut])
+        base_key = subdivide.canonical(base_cut)
+        faces = set()
+        if abs(rect[3] - fy1) < _EPS:
+            faces.add("N")
+        if abs(rect[1] - fy0) < _EPS:
+            faces.add("S")
+        if abs(rect[0] - fx0) < _EPS:
+            faces.add("W")
+        if abs(rect[2] - fx1) < _EPS:
+            faces.add("E")
+        ctx = placement.Context(
+            zone=zone,
+            corridor_side=result.corridor_sides.get(zone),
+            director_side=result.cut_sides.get(zone),
+            exterior_faces=frozenset(faces),
+        )
+        rooms = [subdivide.SubRoom(r.name, r.category) for r in base_cut]
+        for cand in subdivide.subdivisions(
+            (0.0, 0.0, rect[2] - rect[0], rect[3] - rect[1]), rooms, zone=zone
+        ):
+            shifted = [
+                FinalRoom(c.name, c.category, zone,
+                          (c.rect[0] + rect[0], c.rect[1] + rect[1],
+                           c.rect[2] + rect[0], c.rect[3] + rect[1]))
+                for c in cand
+            ]
+            if subdivide.canonical(shifted) == base_key:
+                continue
+            if _cut_score([(r.name, r.rect) for r in shifted]) != base_score:
+                continue
+            if placement.violations(shifted, rect, ctx):
+                continue
+            out.append((zone, {zone: shifted}))
+    return out
+
+
 def _pick_distinct(cands: list[Variant], n: int) -> list[Variant]:
     """Greedy MAXIMIN over _facade_distance: take the best-scoring variant, then
     repeatedly take whichever remaining candidate is FURTHEST from everything
@@ -222,13 +392,13 @@ def _pick_distinct(cands: list[Variant], n: int) -> list[Variant]:
         pick = max(
             rest,
             key=lambda c: (
-                min(_facade_distance(c, s) for s in chosen),
+                min(_plan_distance(c, s) for s in chosen),
                 c.layout.objective,
                 c.coverage,
             ),
         )
         rest.remove(pick)
-        if min(_facade_distance(pick, s) for s in chosen) == 0:
+        if min(_plan_distance(pick, s) for s in chosen) == 0:
             continue  # identical packing under another preset/seed label
         chosen.append(pick)
     return chosen
@@ -246,6 +416,7 @@ def generate(
     seen: set[tuple] = set()
     # best passing variant per preset (drives visual diversity) + spares
     best_per_preset: dict[str, Variant] = {}
+    best_src: dict[str, SolveResult] = {}
     spares: list[Variant] = []
 
     for preset in PRESETS:
@@ -293,8 +464,38 @@ def generate(
                 if cur is not None:
                     spares.append(cur)
                 best_per_preset[preset] = var
+                best_src[preset] = sr
             else:
                 spares.append(var)
+
+    # SUBDIVISION FAN-OUT. The zone packing yields exactly one arrangement on this
+    # program (six exhausted levers), so handedness is the only diversity the
+    # preset axis can offer. Subdivision is the axis that measured positive, and
+    # this is where it enters: for each preset's best plan, rebuild the SAME
+    # solved arrangement with each score-equal alternative subdivision the
+    # placement filter accepts, and let the picker compete them against the
+    # originals. Only the per-preset bests are expanded -- the spares are by
+    # construction the same packing under another seed, so expanding them would
+    # multiply duplicates and cost solve-time for nothing.
+    for preset, base_var in list(best_per_preset.items()):
+        sr = best_src.get(preset)
+        if sr is None:
+            continue
+        for i, (_zone, override) in enumerate(
+            subdivision_variants(sr, base_var.layout), start=1
+        ):
+            alt = build_layout(sr, program, overrides=override)
+            alt.warnings = sr.warnings + alt.warnings
+            av = validate(alt, program)
+            if not av.ok or av.errors:
+                continue
+            sig = _signature(alt)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            alt.warnings = av.warnings
+            spares.append(Variant(layout=alt, svg=render(alt),
+                                  coverage=av.coverage, subdivision=i))
 
     # rank distinct presets first, then backfill from spares (different seeds).
     # The per-preset bests go through the maximin picker so the returned set is
@@ -321,6 +522,22 @@ def generate(
             keys[k] = len(keys)
         v.arrangement = keys[k]
 
+    # ...and WHICH SUBDIVISION of it, renumbered densely over the RETURNED set.
+    # The index each alternative carried until now was its position in the
+    # enumeration, which is stable but sparse — the first alternative actually
+    # returned was #5, because four earlier ones lost the dedupe or the picker.
+    # An id that skips is an id a UI cannot show. Keyed on the rect multiset
+    # canonicalised over the four symmetries, exactly as `arrangement` is, so the
+    # same cut seen mirrored keeps ONE id; and the default cut is numbered first
+    # so the shipped plan is always subdivision 0.
+    sub_ids: dict[tuple, int] = {}
+    for v in sorted(res.variants, key=lambda x: x.subdivision != 0):
+        sk = _subdivision_key(v.layout)
+        if sk not in sub_ids:
+            sub_ids[sk] = len(sub_ids)
+    for v in res.variants:
+        v.subdivision = sub_ids[_subdivision_key(v.layout)]
+
     n_arrangements = len(keys)
     if n_arrangements < min(n, 3):
         # Count ARRANGEMENTS, not variants. Saying "2 distinct variants" when
@@ -328,9 +545,18 @@ def generate(
         # warning is the only thing standing between that fact and the UI.
         extra = ""
         if len(res.variants) > n_arrangements:
+            n_sub = len({(v.arrangement, v.subdivision) for v in res.variants})
+            how = "in different orientations"
+            if n_sub > n_arrangements:
+                # Say which axis the extra plans actually came from. "Different
+                # orientations" was the only possibility before the subdivision
+                # fan-out existed; asserting it now would misdescribe a plan whose
+                # rooms really are cut differently.
+                how = ("in different orientations and/or with a different internal "
+                       "subdivision")
             extra = (
                 f" ({len(res.variants)} variants returned, but they are the same "
-                f"arrangement in different orientations, not different designs)"
+                f"arrangement {how}, not different designs)"
             )
         res.warnings.append(
             f"only {n_arrangements} distinct arrangement(s) found; wanted {n}{extra}"

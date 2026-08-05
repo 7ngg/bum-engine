@@ -624,6 +624,62 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   missing; it is now falsified. **Footprint shape (L, U) is the open path.**
   See `tests/test_generate.py::test_at_least_three_distinct_arrangements`, a
   strict xfail carrying the full evidence.
+
+  **SUBDIVISION IS NOW A LIVE DIVERSITY AXIS** (2026-08-05). `generate()` fans
+  out over presets × seeds as before, then expands each preset's best plan with
+  `subdivision_variants(result, base)` — alternative subdivisions of the
+  **already-solved** arrangement. No re-solve, no shape table touched, so the
+  packing, the objective and the golden cannot move.
+
+  **THE SCORE-EQUAL RESTRICTION IS WHAT MAKES IT SOUND.** Only alternatives whose
+  `_cut_score` equals the default cut's are offered. The objective carries a
+  `cut_penalty` term tabulated for the cut the solver expected, so an alternative
+  scoring differently would make that variant's reported objective wrong — and
+  `slicer._penalty_disagreement` would say so, correctly. Restricting to ties
+  means **every returned variant carries the solve's objective exactly, with every
+  term identical**, and that guard stays silent by construction rather than by
+  suppression (confirmed: `result.warnings` is still 0 after every rebuild).
+  Measured on roomy @208, both presets: 25 alternatives pass the placement
+  filter, **5 are score-equal, and all 5 rebuild validator-clean** —
+  master_suite 3, children 1, entry 1, kitchen_laundry 0.
+
+  **`Variant.subdivision`** is the new field, and it is deliberately SEPARATE
+  from `arrangement`: two plans that differ only inside a zone genuinely *are*
+  the same zone layout, so overloading `arrangement` would make it lie in the one
+  case it exists to describe. The pair `(arrangement, subdivision)` identifies a
+  plan. It is renumbered densely over the returned set and keyed on the rect
+  multiset canonicalised over the same four symmetries `arrangement` uses, so the
+  same cut seen mirrored keeps one id, and the default cut is always 0.
+
+  **THE SELECTOR HAD TO BE EXTENDED, and the extension is what makes the axis
+  visible at all.** `_facade_distance` answers "which room sits on which face"
+  and scores a subdivision alternative 0 whenever no room changes facade role —
+  so `_pick_distinct` dropped them as duplicates. `_plan_distance` adds a
+  geometry term: rooms whose rectangle has no counterpart in the other plan,
+  measured under the SAME symmetry and minimised jointly. **Names are dropped
+  from the geometry term on purpose** — the children zone offers an alternative
+  where Bedroom 2 and Bedroom 3 swap with *identical rectangles*, so a name-keyed
+  measure would ship a relabelling as a second design; comparing rect multisets
+  scores it 0 and it is correctly dropped. Measured: facade-only returns **2**
+  variants, extended returns **4**.
+
+  **HOW DIFFERENT ARE THEY, HONESTLY? The largest per-room delta across the
+  returned set is 1.00 m².** The alternatives that win the picker are the entry
+  strip's — Mudroom 3.00 → 4.00 against Foyer 5.00 → 4.00, one divider moving
+  0.5 m — and the master-suite ones are 1.25 m² (Master Bathroom 7.50 ↔ 6.25
+  against the Walk-in Closet). These are real differences on a drawing and small
+  ones. They are one house with a redrawn service strip, not four designs, and
+  the `only N distinct arrangement(s)` warning still says so.
+
+  **COST: 1.4 s of a 78.7 s `generate()`, i.e. 1.8%.** Phase-timed: solves 77.2 s,
+  `build_layout` 1.4 s, `subdivision_variants` 0.02 s, `_pick_distinct` 0.02 s.
+  So this round is NOT what makes `test_generation_under_time_budget` fail — that
+  is pre-existing solve time (it already failed at 67.0 s on the previous commit).
+  What this round does change is the argument for the fix: **`seeds=[1]` now
+  returns FOUR variants where the full 16-solve fan-out returns three**, in about
+  a fifth of the time, because subdivision supplies the diversity the extra seeds
+  never did. Still not applied — the seed axis remains only proven inert on
+  fixtures where every solve reaches OPTIMAL.
 - **`schema_io.py`** — deliberately validates twice: pydantic models
   (`models.py`) guard in-process shape/types; `jsonschema` against
   `/schemas/*.schema.json` guards the actual wire contract shared with the C#
