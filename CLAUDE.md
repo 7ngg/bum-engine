@@ -601,6 +601,126 @@ program.json -> solver.py -> slicer.py -> validator.py -> generate.py -> svg.py
   zone), or any door whose host wall is missing/under `0.8`m. Soft checks
   (kitchen↔dining, dining↔living, master↔ensuite) only warn — a sliced-out
   room can legitimately be absent.
+
+  **THE ENTRY JUNCTION — HIS TWO COMPLAINTS, MEASURED AND PRICED (round 6,
+  2026-08-05/06). MACHINERY ONLY: three flags, all default OFF, nothing shipped
+  as default.** Reviewing the subdivision-variant SVGs he raised two defects at
+  the Foyer:
+  1. *"Eve girisden korodora birbasa kecid olmalidi. Adam mecburduki mudrooma
+     kecsin sonra karidora getsin. Mudroom ve foye ikiside coridora kecmelidi."*
+     — a DIRECT entry→corridor passage; today one is forced through the Mudroom;
+     BOTH entry rooms must reach the corridor. Flags `solver._ENTRY_FOYER_CORRIDOR`
+     (F) and `_ENTRY_MUDROOM_CORRIDOR` (M).
+  2. *"Foyeden direk bedrooma kecid cox menasizdir."* — no door from the Foyer
+     straight into a bedroom. Flag `validator._PREFER_CIRCULATION_PARENT` (P).
+
+  **THE JUNCTION, MEASURED (roomy @208, workers=1, seed 1, all three shipping
+  presets gW_eN / gE_eN / gE_eW alike).** The corridor is 1.50 × 8.00 and its
+  ONLY shared boundary with the entry zone is its top edge — whose length IS the
+  corridor's width. The entry strip lies along that edge as
+  Mudroom | Foyer | Guest WC, so the whole 1.50 m lands on the Mudroom:
+  **Corridor↔Mudroom 1.50, Corridor↔Foyer 0.00** (they meet at the single corner
+  point). Two rooms each needing ≥ 0.90 m of a 1.50 m edge is arithmetically
+  impossible — **the 1.8-vs-1.5 arithmetic is correct on the real geometry**, and
+  there is no other contact path: the corridor's long faces are bounded by
+  Living/Kitchen/Garage and by children, and the entry zone lies wholly north of
+  it. BOTH-CONNECT without widening would need the corridor to meet the entry on
+  its LONG face with the strip cut perpendicular to it, which needs the garage
+  N/S of the entry — not what the `eN` presets produce.
+
+  **P IS FREE. F COSTS THE RUNG.** Sweep at 208, both presets:
+
+  | arm | status | objective | footprint | corridor | F↔C | M↔C | Bedroom 3 |
+  |---|---|---|---|---|---|---|---|
+  | baseline | OPTIMAL | 625.41094 | 208.00 | 1.50×8.00, 5.33:1 | 0.00 | 1.50 | Foyer, d1 |
+  | **P** | OPTIMAL | **625.41094** | **208.00** | 1.50×8.00, 5.33:1 | 0.00 | 1.50 | **Corridor, d3** |
+  | F | OPTIMAL | 523.49427 | **217.00** | 2.50×8.00, 3.20:1 | 1.00 | 1.50 | Foyer, d1 |
+  | F+M | OPTIMAL | 523.49427 | 217.00 | 2.50×8.00, 3.20:1 | 1.00 | 1.50 | Foyer, d1 |
+  | **F+M+P** | OPTIMAL | 523.49427 | 217.00 | 2.50×8.00, 3.20:1 | 1.00 | 1.50 | **Corridor, d2** |
+
+  **P alone changes NO geometry at all** — same objective to ten decimals, same
+  rects, same corridor, `validate().ok` with the same three warnings, every
+  must-not-regress item passing — and it kills the Foyer→Bedroom 3 door outright.
+  Re-measured on **seeds 1–5 × both presets × BOTH fixtures** (roomy @208 and
+  `program.example.json` @184): objective identical in all 20 pairs, 16/16
+  reachable, `validate().ok`, Bedroom 3 reparented Foyer/d1 → Corridor/d3 and the
+  Foyer→Bedroom 3 door absent in every one. The defect is not roomy-specific.
+  It is a pure door-set change. **M alone buys nothing**, because
+  `_force_backbone_reaches_foyer` already lands 1.50 m of Mudroom on the
+  corridor: same objective, same zone shapes, same validity at every rung.
+
+  **M IS NOT BYTE-IDENTICAL, THOUGH, AND THE REASON IS A FREE SYMMETRY WORTH
+  KNOWING.** On gW_eN the whole house comes out **translated 3.00 m WEST** — every
+  zone shifted by exactly (−3.0, 0), same shapes, same objective to ten decimals.
+  The plot is 20 m wide with a 2 m side setback, so a 13 m footprint has 3 m of
+  legal slack in x, and no objective term references absolute x. **x-translation
+  is therefore a free symmetry on this fixture**, and ANY change to the model lets
+  CP-SAT break that tie differently. (gE_eN does not move.) This qualifies the
+  Phase-4 note that the setback envelope "broke the plot's translational
+  symmetry": it broke it in **y**, not in x. Consequence for any future
+  measurement: compare zone SHAPES, not coordinates, or you will read a tie-break
+  as a repack — `test_entry_junction.py` asserts the translation explicitly.
+
+  **F IS PROVEN INFEASIBLE AT 201.50, 208.00 AND 216.00, AND ITS ONLY REACHABLE
+  FOOTPRINT IS 217.00.** Pinning `fp.area` across 201.50 / 208.00 / 216.00 /
+  216.25 / 216.50 / 216.75 / 217.00 / 218.00 / 220.00 on both presets:
+  **every one is INFEASIBLE except 217.00 (14.0 × 15.5)**, which is OPTIMAL. So
+  F does not merely prefer a bigger house, it admits exactly one — and 217.00 is
+  **45.21% site coverage, one rung ABOVE the architect's own 45% = 216.00 target**
+  (`test_standards.py::test_shipped_brief_sits_at_or_below_his_coverage_target`
+  would fail). That is why this round STOPPED rather than shipping.
+
+  **THE INFEASIBILITY IS THE GEOMETRY'S, NOT THE APPROXIMATION'S — controlled
+  for.** F reifies off a conservative FOYER CORE (see
+  `solver._force_entry_rooms_reach_corridor`: `_split_off_wc` searches the WC
+  strip on BOTH axes, so no constant Foyer offset exists and the core is the
+  intersection of the two possible positions). Re-running F with that core
+  widened to the WHOLE entry-minus-Mudroom remainder — an over-approximation that
+  admits any packing where *anything but the Mudroom* fronts the corridor — is
+  **equally INFEASIBLE at 201.50, 208.00 and 216.00**. And the control cuts the
+  other way too: at 217.00 the loosened version returns a plan whose REAL sliced
+  Foyer holds **0.00 m** of corridor wall, i.e. it satisfies the loosened
+  constraint while missing his requirement entirely. The conservative core is
+  therefore not merely defensible, it is **necessary**.
+
+  **WHO PAYS FOR THE WIDER CORRIDOR** (baseline 208 → F+M+P 217, per room):
+  Corridor **+8.00** (12.00 → 20.00, tier 3), Kitchen +2.50 (10.00 → 12.50 — it
+  finally leaves its floor), Foyer +2.00, Laundry +2.00; against **Master Bedroom
+  −2.75 (19.25 → 16.50, i.e. onto its floor)**, Office −1.50, Living −1.25. Net
+  +9.00, exactly the footprint growth — so the corridor is funded by NEW AREA,
+  not by redistribution. **Both aggregate scores get worse**: tier-1 shortfall
+  10.75 → **12.25**, tier-3 excess 29.11 → **41.11**. The prediction that Living
+  and Office would pay was half right; the biggest single payer is the Master
+  Bedroom.
+
+  **CORRIDOR ASPECT (Ruling 3) — RESOLVED ONLY OFF THE RUNG, AND F IS NOT NEEDED
+  FOR IT.** F+M+P gives 2.50 × 8.00 = **3.20:1**, inside his 3:1–4:1. But the
+  BASELINE pinned at 217.00 already gives 2.00 × 8.00 = **exactly 4.00:1** with
+  no new constraint at all. So Ruling 3 is a consequence of the 217 footprint,
+  not of the junction fix, and the open corridor-aspect item stays OPEN at 208
+  (5.33:1 on every shipping preset).
+
+  **THE MUDROOM↔CORRIDOR DOOR DOES NOT MATERIALISE UNDER F.** With F on the tree
+  gives Foyer→Corridor as a spanning edge and reaches the Mudroom from the Foyer,
+  so Mudroom↔Corridor is not a tree edge despite its 1.50 m wall — it would need
+  the secondary-door path, which was not reached because the round stopped first.
+
+  **SUBDIVISION FAN-OUT GROWS, IT DOES NOT COLLAPSE** (the prediction was that
+  F+M would kill it by constraining the entry divider). Score-equal alternatives
+  per preset: baseline **5** (master_suite 3, children 1, entry 1), all 5
+  validator-clean; F+M+P **19** (master_suite 15, children 1, entry 3), **13**
+  validator-clean. `generate(n=4, seeds=[1])` returns 4 variants / 1 arrangement
+  in both arms.
+
+  **P's TRAVERSAL RULE IS RESTRICTED TO PRIVATE ROOMS, AND THE GENERAL FORM IS
+  WHY.** Deferring every room that has an alternative circulation parent
+  deadlocks on this project's own geometry: before F, the Corridor is not
+  adjacent to the Foyer at all — it hangs off the MUDROOM — so the root would
+  defer the Mudroom and never reach the Corridor, pass 1 stalls at
+  {Foyer, Guest WC}, and the fallback pass hands everything straight back to the
+  root. P becomes a no-op. Bedrooms are what his sentence is about and a bedroom
+  is never a route to anywhere, so restricting the deferral to them cannot stall
+  the traversal. See `validator.access_tree`.
 - **`generate.py`** — fans out `PRESETS × seeds` (default seeds `[1,2,3,4]`),
   solves + slices + validates each, then selects by **greedy maximin over
   `_facade_distance`** (each room → which faces of the house it touches; the

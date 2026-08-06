@@ -209,7 +209,7 @@ def validate(layout: Layout, program: Program | None = None) -> ValidationResult
     # 9. Access graph (Task 5 Phase 2): the plan must admit a legal, bedroom-free
     # access tree from the front door — the hard gate that turns "corridor exists"
     # into "every room is reachable and no bedroom is a passage".
-    errors.extend(validate_plan(layout, program))
+    errors.extend(validate_plan(layout, program, warnings))
 
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings, coverage=coverage)
 
@@ -225,6 +225,25 @@ ACCESS_DOOR_M = 0.9  # an access-graph edge needs a shared wall a door fits in
 # ("circ") is excluded at the call site, not here, because circulation is the
 # thing the route is SUPPOSED to be made of.
 _HABITABLE_CATEGORIES = {"living", "office", "private"}
+
+# ENTRY JUNCTION (architect review of the subdivision-variant SVGs, 2026-08-05),
+# complaint 2, verbatim: "Foyeden direk bedrooma kecid cox menasizdir." -- a door
+# from the Foyer straight into a bedroom is senseless.
+#
+# The rooms his sentence is about: the entry hall proper. Both are category
+# "circ", so access_tree's tier-1 privacy rule ("a bedroom only opens off
+# circulation") passes them, which is exactly how a bedroom came to hang off the
+# entry hall at depth 1 while it had a perfectly good corridor wall.
+ENTRY_ROOMS = {"Foyer", "Mudroom"}
+# The circulation that is INTERNAL to the house -- the thing a bedroom is
+# supposed to open off. Deliberately a name set and not "category circ minus
+# ENTRY_ROOMS": if a plan ever grows a second named hall it should be listed
+# here on purpose, not swept in by a subtraction.
+INTERNAL_CIRCULATION = {"Corridor"}
+
+# P. Prefer a NON-ROOT circulation parent over the root Foyer when a room
+# qualifies from both. Default OFF; see access_tree.
+_PREFER_CIRCULATION_PARENT: bool = False
 
 
 def _is_public(name: str, category: str) -> bool:
@@ -270,7 +289,25 @@ def access_tree(rooms) -> tuple[list[tuple[int, int]], set[int], int | None]:
     per non-root reached room; `reached` is the set of reachable indices; `root`
     is the entry-room index. Because the doors ARE these edges, a door can never
     exist that this tree did not produce, and the door builder and the validator
-    can never disagree. Deterministic: neighbours are visited in index order."""
+    can never disagree. Deterministic: neighbours are visited in index order.
+
+    P -- THE ROOT DOES NOT GET FIRST REFUSAL (architect, 2026-08-05, complaint 2:
+    "Foyeden direk bedrooma kecid cox menasizdir" -- a door from the Foyer
+    straight into a bedroom is senseless). The traversal is a LIFO DFS, so the
+    root pops first and claims EVERY tier-valid neighbour before any other room
+    is ever expanded. The tier-1 rule cannot stop it: it asks only that a
+    bedroom's parent be circulation, and the Foyer IS circulation. Measured on
+    the shipped 208 (gW_eN / gE_eN / gE_eW alike): Bedroom 3 hangs off the Foyer
+    at depth 1 while holding 3.00 m of corridor wall -- a qualifying parent it
+    was simply never offered. So this is a PARENT-SELECTION defect, not geometry.
+
+    The rule: when a room qualifies from BOTH a non-root circulation room and the
+    ROOT, the non-root circulation room wins. Implemented as a DEFERRAL rather
+    than a re-ordering, in one pass plus a fallback, so reachability is preserved
+    by construction: the root skips a claim it could make, the other circulation
+    room takes it when its own turn comes, and anything still unclaimed at the
+    end is offered to the root again in a second pass. A room whose only
+    circulation neighbour IS the root is therefore untouched."""
     names = [rm.name for rm in rooms]
     cats = [rm.category for rm in rooms]
     n = len(names)
@@ -295,45 +332,138 @@ def access_tree(rooms) -> tuple[list[tuple[int, int]], set[int], int | None]:
                 adj[j].add(i)
 
     root = _access_root(names)
+
+    def may_parent(cur: int, nb: int) -> bool:
+        """Is `cur` a legal tree-parent for `nb`? The two tiers plus the public
+        mirror plus the no-through transit block, unchanged and in one place."""
+        nb_parents = parents(nb)
+        if nb_parents:
+            if names[cur] not in nb_parents:
+                return False  # tier 2: ensuite room only from its designated parent
+        elif no_through(nb) and cats[nb] == "private":
+            if cats[cur] != "circ":
+                return False  # tier 1 (privacy): a bedroom only opens off circulation
+        elif _is_public(names[nb], cats[nb]):
+            if cats[cur] != "circ" and not _is_public(names[cur], cats[cur]):
+                return False  # mirror: public only from circulation or another public room
+        if cur != root and no_through(cur) and names[cur] not in nb_parents:
+            return False  # no_through room: only its ensuite children pass through
+        return True
+
+    def deferred(nb: int) -> bool:
+        """P: the root should not claim `nb` when a NON-ROOT circulation room
+        could. Only the root ever defers, and only when a concrete alternative
+        parent exists on the geometry -- so this can never strand a room whose
+        one circulation neighbour is the root itself.
+
+        RESTRICTED TO PRIVATE ROOMS, AND THE GENERAL FORM IS WHY. Deferring EVERY
+        room that has an alternative circulation parent -- the literal reading of
+        the rule -- deadlocks on this project's own geometry, because the
+        Corridor is not adjacent to the Foyer at all before F is applied: it
+        hangs off the MUDROOM. The root would defer the Mudroom (the Corridor
+        could parent it) and thereby never reach the Corridor, so pass 1 stalls
+        at {Foyer, Guest WC} and pass 2 hands everything straight back to the
+        root -- P becomes a no-op, measured. Bedrooms are what his sentence is
+        about ("Foyeden direk bedrooma kecid"), a bedroom is never a route to
+        anywhere, and deferring one therefore cannot stall the traversal."""
+        if cats[nb] != "private":
+            return False
+        return any(
+            other != root and cats[other] == "circ" and may_parent(other, nb)
+            for other in adj[nb]
+        )
+
     edges: list[tuple[int, int]] = []
     reached = {root}
-    stack = [root]
-    while stack:
-        cur = stack.pop()
-        cur_blocks_transit = cur != root and no_through(cur)
-        for nb in sorted(adj[cur]):
-            if nb in reached:
+
+    def grow(defer: bool) -> None:
+        stack = [root] if not edges else [root, *(c for _p, c in edges)]
+        seen_expanded: set[int] = set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen_expanded:
                 continue
-            nb_parents = parents(nb)
-            if nb_parents:
-                if names[cur] not in nb_parents:
-                    continue  # tier 2: ensuite room only from its designated parent
-            elif no_through(nb) and cats[nb] == "private":
-                if cats[cur] != "circ":
-                    continue  # tier 1 (privacy): a bedroom only opens off circulation
-            elif _is_public(names[nb], cats[nb]):
-                if cats[cur] != "circ" and not _is_public(names[cur], cats[cur]):
-                    continue  # mirror: a public room only from circulation or another public room
-            if cur_blocks_transit and names[cur] not in nb_parents:
-                continue  # no_through room: only its ensuite children pass through
-            edges.append((cur, nb))
-            reached.add(nb)
-            stack.append(nb)
+            seen_expanded.add(cur)
+            for nb in sorted(adj[cur]):
+                if nb in reached or not may_parent(cur, nb):
+                    continue
+                if defer and cur == root and deferred(nb):
+                    continue
+                edges.append((cur, nb))
+                reached.add(nb)
+                stack.append(nb)
+
+    if _PREFER_CIRCULATION_PARENT:
+        # pass 1 defers the root's claims; pass 2 re-offers whatever nobody took,
+        # which is what keeps reachability identical to the undeferred traversal.
+        grow(defer=True)
+        grow(defer=False)
+    else:
+        grow(defer=False)
     return edges, reached, root
 
 
-def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
+def _check_entry_parented_private(
+    rects, names, cats, edges, errors: list[str], warnings: list[str]
+) -> None:
+    """ENTRY JUNCTION, complaint 2, made DURABLE (architect, 2026-08-05).
+
+    HIS SENTENCE, verbatim, and the whole source of this rule:
+      "Foyeden direk bedrooma kecid cox menasizdir."
+      -- a door from the Foyer straight into a bedroom is senseless.
+
+    access_tree's P policy is what stops this happening; this is what stops it
+    coming BACK. The two are deliberately separate: P is a traversal preference
+    and a future change to the traversal could quietly undo it, whereas a plan
+    that ships with a bedroom hanging off the entry hall is a defect no matter
+    which code produced it.
+
+    ERROR vs WARNING, and the reason for the split. If the bedroom HOLDS a
+    door-width wall on internal circulation, then a corridor parent was available
+    and something chose the entry hall over it -- that is exactly his complaint,
+    and it is a hard error. If it holds NO such wall, the entry hall is the only
+    parent the geometry offers, and a small house with no corridor at all must
+    not be hard-failed for a topology it cannot avoid: warning."""
+    circ_idx = [i for i, nm in enumerate(names) if nm in INTERNAL_CIRCULATION]
+    for parent, child in edges:
+        if cats[child] != "private" or names[parent] not in ENTRY_ROOMS:
+            continue
+        shared = (geom.shared_edge(rects[child], rects[c]) for c in circ_idx)
+        alt = max((e.length for e in shared if e is not None), default=0.0)
+        if alt >= ACCESS_DOOR_M - geom.EPS:
+            errors.append(
+                f"access graph: private room {names[child]!r} is entered from the entry "
+                f"room {names[parent]!r} while it holds {alt:.2f} m of wall on internal "
+                f"circulation - a bedroom must open off the corridor, not the entry hall"
+            )
+        else:
+            warnings.append(
+                f"private room {names[child]!r} is entered from the entry room "
+                f"{names[parent]!r}; it has no internal-circulation wall to open off "
+                f"instead ({alt:.2f} m < {ACCESS_DOOR_M} m)"
+            )
+
+
+def validate_plan(
+    layout: Layout, program: Program | None = None, warnings: list[str] | None = None
+) -> list[str]:
     """Hard gate: the layout must admit the access_tree with EVERY room reachable
     from the entry — nothing stranded behind a no_through_traffic bedroom, no
     ensuite opening onto the corridor. Because slicer._build_doors builds its
     doors from the SAME access_tree, a clean result here also proves the placed
-    doors reach every room. A layout that fails is dropped by validate()."""
+    doors reach every room. A layout that fails is dropped by validate().
+
+    `warnings` is an optional sink for the SOFT half of a rule whose hard half is
+    an error — today only _check_entry_parented_private's no-corridor case. It is
+    a parameter rather than a second return value so every existing caller (and
+    every test that asserts `validate_plan(...) == []`) keeps its contract."""
     rooms = layout.rooms
     if not rooms:
         return ["plan has no rooms"]
     edges, reached, _root = access_tree(rooms)
     names = [rm.name for rm in rooms]
     cats = [rm.category for rm in rooms]
+    rects = [tuple(rm.rect_m) for rm in rooms]
     errors: list[str] = []
 
     unreached = sorted({names[i] for i in range(len(rooms)) if i not in reached})
@@ -373,6 +503,14 @@ def validate_plan(layout: Layout, program: Program | None = None) -> list[str]:
                 f"access graph: public room {names[child]!r} is entered from "
                 f"{names[parent]!r} (private/non-public) - social zone routed through a private room"
             )
+
+    # ENTRY JUNCTION complaint 2, made durable. Gated with the traversal
+    # preference that prevents it, so the two ship or stay behind together.
+    if _PREFER_CIRCULATION_PARENT:
+        _check_entry_parented_private(
+            rects, names, cats, edges, errors,
+            warnings if warnings is not None else [],
+        )
 
     parent_of = {c: p for p, c in edges}
 
